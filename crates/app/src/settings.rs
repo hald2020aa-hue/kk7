@@ -679,7 +679,7 @@ impl Default for Settings {
             view: None,
             dark_mode_support: true,
             always_dark: false,
-            theme: "classic".into(),
+            theme: if cfg!(target_os = "android") { "neon-pro" } else { "classic" }.into(),
             renderer: None,
             window_system: None,
             interface_size: 100,

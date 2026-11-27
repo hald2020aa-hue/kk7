@@ -1,0 +1,78 @@
+name: MDM Android Neon V7
+
+on:
+  push:
+    branches: [android-neon-v7]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install dependencies
+        run: |
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake ninja-build nasm libgtk-3-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+          cargo install cargo-ndk --version 4.1.2 --locked
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      - name: Test original application
+        run: |
+          cargo test -p mdm-app --lib
+          cargo test -p mdm-engine --lib
+          cargo test -p mdm-engine --test e2e segmented_download_uses_many_connections
+          cargo test -p mdm-engine --test e2e pause_and_resume_continues_where_it_stopped
+          cargo test -p mdm-engine --test e2e survives_drops_and_503s
+          cargo test -p mdm-torrent --lib seed_to_a_second_session_with_only_the_chosen_file
+          cargo test -p mdm-torrent --lib direct_layout_downloads_resumes_and_keeps_internal_paths
+          cargo test -p mdm-app --features android-core --lib android
+          env -u NO_PROXY -u no_proxy cargo test -p mdm-tools
+
+      - name: Build ARM64 APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug -Pmdm.abis=arm64-v8a --stacktrace
+
+      - name: Inspect APK ABI and required libraries
+        run: |
+          python3 - <<'PYAPK'
+          import pathlib, zipfile
+          apks = list(pathlib.Path('android/app/build/outputs/apk/debug').glob('*.apk'))
+          assert len(apks) == 1, apks
+          with zipfile.ZipFile(apks[0]) as z:
+              assert z.testzip() is None
+              files = set(z.namelist())
+              for name in ('libmdm.so', 'libpython.so', 'libffmpeg.so', 'libffprobe.so', 'lib7zz.so'):
+                  assert 'lib/arm64-v8a/' + name in files, name
+              assert not any(f.startswith(('lib/x86/', 'lib/x86_64/', 'lib/armeabi-v7a/')) for f in files)
+          PYAPK
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MDM-NEON-V7-ARM64-TEST
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

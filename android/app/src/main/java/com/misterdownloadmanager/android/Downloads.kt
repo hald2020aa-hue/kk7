@@ -40,6 +40,8 @@ object Downloads {
                 .setSmallIcon(R.drawable.ic_stat_download)
                 .setContentTitle(d.getString("name"))
                 .setContentText(d.getString("line"))
+                .setStyle(NotificationCompat.BigTextStyle().bigText(d.getString("line")))
+                .setColor(android.graphics.Color.rgb(0, 205, 235))
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setSilent(true)
@@ -67,6 +69,7 @@ object Downloads {
                 .setContentTitle(words.getString("complete"))
                 .setContentText(d.getString("name"))
                 .setSubText(d.getString("line"))
+                .setColor(android.graphics.Color.rgb(0, 180, 100))
                 .setAutoCancel(true)
                 .setContentIntent(open)
             Opener.viewIntent(context, d.getString("path"))?.let { view ->

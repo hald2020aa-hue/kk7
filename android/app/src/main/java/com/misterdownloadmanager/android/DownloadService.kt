@@ -120,6 +120,8 @@ class DownloadService : Service() {
                 .setSmallIcon(R.drawable.ic_stat_download)
                 .setContentTitle(context.getString(R.string.app_name))
                 .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setColor(android.graphics.Color.rgb(0, 205, 235))
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setContentIntent(

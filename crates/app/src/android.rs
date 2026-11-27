@@ -416,6 +416,36 @@ pub fn file_given(path: &str) {
     hand_link(path.to_owned());
 }
 
+/// Translate an exact browser URL into the same command as the desktop's integration.
+#[cfg(any(target_os = "android", test))]
+fn browser_command(address: &str, video: bool) -> Option<mdm_ipc::Command> {
+    let parsed = url::Url::parse(address).ok()?;
+    if !(matches!(parsed.scheme(), "http" | "https") && parsed.has_host()
+        || (!video && parsed.scheme() == "magnet")) {
+        return None;
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return None;
+    }
+    Some(if video {
+        mdm_ipc::Command { video_page: Some(address.to_owned()), ..Default::default() }
+    } else {
+        mdm_ipc::Command { url: Some(address.to_owned()), ..Default::default() }
+    })
+}
+
+/// Only called after an explicit user confirmation. WebView credentials stay in WebView.
+#[cfg(target_os = "android")]
+pub fn browser_link_given(address: &str, video: bool) -> bool {
+    let Some(command) = browser_command(address, video) else { return false; };
+    let links = LINKS.lock().unwrap_or_else(|e| e.into_inner());
+    links.1.as_ref().is_some_and(|(tx, wake)| {
+        let sent = tx.send(mdm_ipc::Incoming { cmd: command, reply: None }).is_ok();
+        if sent { wake(); }
+        sent
+    })
+}
+
 fn hand_link(url: String) {
     let mut links = LINKS.lock().unwrap_or_else(|e| e.into_inner());
     let sent = links.1.as_ref().is_some_and(|(tx, wake)| {
@@ -1002,6 +1032,23 @@ mod tests {
             links_in("HTTPS://Example.com/x https://Example.com/x"),
             ["HTTPS://Example.com/x", "https://Example.com/x"]
         );
+    }
+
+    #[test]
+    fn browser_handoff_keeps_exact_urls_and_rejects_local_schemes() {
+        let address = "https://example.test/file.zip?token=a%2Fb&v=(x)";
+        let download = browser_command(address, false).unwrap();
+        assert_eq!(download.url.as_deref(), Some(address));
+        assert!(download.video_page.is_none());
+        assert!(download.cookies.is_none());
+        let video = browser_command(address, true).unwrap();
+        assert_eq!(video.video_page.as_deref(), Some(address));
+        assert!(video.url.is_none());
+        for unsafe_url in ["file:///sdcard/a", "content://a/b", "javascript:alert(1)", "blob:https://example.test/a", "https://user:secret@example.test/a"] {
+            assert!(browser_command(unsafe_url, false).is_none());
+        }
+        assert!(browser_command("magnet:?xt=urn:btih:abc", false).is_some());
+        assert!(browser_command("magnet:?xt=urn:btih:abc", true).is_none());
     }
 
     /// The soft keyboard's text, frame to frame: typed on, corrected, replaced.

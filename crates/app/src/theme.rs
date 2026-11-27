@@ -233,7 +233,7 @@ pub fn update(dark_mode_support: bool, always_dark: bool, ctx: &egui::Context) -
         .unwrap_or_else(|| ctx.system_theme() == Some(egui::Theme::Dark));
     #[cfg(not(any(windows, target_os = "linux")))]
     let system_dark = ctx.system_theme() == Some(egui::Theme::Dark);
-    let want = wanted(dark_mode_support, always_dark, system_dark);
+    let want = current().id == "neon-pro" || wanted(dark_mode_support, always_dark, system_dark);
     DARK.swap(want, Ordering::Relaxed) != want
 }
 

@@ -20,6 +20,21 @@ import java.io.File
  * and runs its `android_main` on a thread of its own, where MDM's interface draws (crates/android).
  */
 class MainActivity : GameActivity() {
+    private var browser: BrowserPanel? = null
+
+    fun showBrowser(arabic: Boolean) {
+        browser?.destroy()
+        try {
+            browser = BrowserPanel(this, arabic) { url, video -> nativeBrowserLink(url, if (video) 1 else 0) != 0 }
+            browser?.show()
+        } catch (e: Exception) {
+            browser?.destroy()
+            browser = null
+            Log.w("mdm", "internal browser unavailable", e)
+            android.widget.Toast.makeText(this, if (arabic) "المتصفح الداخلي غير متاح" else "Internal browser unavailable", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // The keystore, alarms, locks and the downloads' service, for the app (libmdm.so).
@@ -107,16 +122,35 @@ class MainActivity : GameActivity() {
         try {
             val dir = File(cacheDir, "shared").apply { mkdirs() }
             val file = File(dir, "shared-${System.currentTimeMillis()}.torrent")
-            contentResolver.openInputStream(uri)?.use { input ->
-                file.outputStream().use { output -> input.copyTo(output) }
+            // A malicious or mistaken share must not fill storage before the size check.
+            val limit = 16L shl 20
+            try {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    file.outputStream().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            if (total > limit) throw java.io.IOException("Torrent exceeds size limit")
+                            output.write(buffer, 0, count)
+                        }
+                    }
+                }
+                if (file.length() in 1..limit) nativeFile(file.absolutePath) else file.delete()
+            } catch (e: Exception) {
+                file.delete()
+                throw e
             }
-            if (file.length() in 1..(16L shl 20)) nativeFile(file.absolutePath) else file.delete()
         } catch (e: Exception) {
             Log.w("mdm", "shared torrent", e)
         }
     }
 
     override fun onDestroy() {
+        browser?.destroy()
+        browser = null
         // GameActivity's destruction waits for the app's thread to end: the app is told first,
         // and closes (saving the list, as Exit does).
         nativeEnding()
@@ -132,6 +166,7 @@ class MainActivity : GameActivity() {
     private external fun nativeEditorAction()
 
     private external fun nativeLinks(text: String)
+    private external fun nativeBrowserLink(text: String, video: Int): Int
 
     private external fun nativeFile(path: String)
 }

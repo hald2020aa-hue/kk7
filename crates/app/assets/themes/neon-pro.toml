@@ -1,0 +1,69 @@
+name = "Neon Pro"
+icons = "accent"
+
+[controls]
+field-focus = "ring"
+check = "fluent"
+button = "fluent"
+progress = "bar"
+scroll = "overlay"
+caption = "metro"
+focus = "ring"
+
+[sizes]
+radius = 12
+"radius.button" = 10
+"radius.part" = 8
+"radius.check" = 5
+"radius.flyout" = 14
+"radius.menu-item" = 8
+"radius.egui" = 10
+"radius.popup" = 12
+border = 1
+"focus-line" = 2
+"list.row" = 25
+"list.header" = 30
+
+[seeds.light]
+background = "#f1f6fb"
+surface = "#ffffff"
+header = "#e5eef9"
+text = "#102238"
+accent = "#006b84"
+selection = "#00748c"
+error = "#b01e40"
+warning = "#8a5800"
+success = "#00723c"
+
+[seeds.dark]
+background = "#080f19"
+surface = "#142336"
+header = "#101b2c"
+text = "#f2f6ff"
+accent = "#00e5ff"
+selection = "#00e5ff"
+error = "#ff6b86"
+warning = "#ffc400"
+success = "#00ef58"
+
+[dark]
+"text.muted" = "#a1b4cc"
+"selection.text" = "#08131f"
+"selection.inactive" = "#153a4c"
+"button.accent.text" = "#08131f"
+"button.accent.text.pressed" = "#08131f"
+"focus.ring" = "#00e5ff"
+"meter.fill" = "#00e5ff"
+"meter.track" = "#23364c"
+"progress.bar" = "#00e5ff"
+"progress.track" = "#23364c"
+"progress.status" = "#00e5ff"
+"segments.done" = "#00ef58"
+"segments.start" = "#00e5ff"
+"segments.missing" = "#23364c"
+"menubar.line" = "#25334a"
+"toolbar.line" = "#25334a"
+"toolbar.line.light" = "#18283c"
+"chip.web" = "#164054"
+"chip.torrent" = "#39245d"
+"chip.text" = "#f2f6ff"

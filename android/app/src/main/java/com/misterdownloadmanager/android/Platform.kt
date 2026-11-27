@@ -100,7 +100,12 @@ object Platform {
                 "ok:"
             }
             "open" -> {
-                Opener.open(activity.get() ?: app, a.orEmpty(), b.orEmpty())
+                if (a == "browser") {
+                    val host = activity.get() as? MainActivity ?: throw IllegalStateException("no activity")
+                    host.runOnUiThread { if (!host.isFinishing && !host.isDestroyed) host.showBrowser(b == "ar") }
+                } else {
+                    Opener.open(activity.get() ?: app, a.orEmpty(), b.orEmpty())
+                }
                 "ok:"
             }
             "toBack" -> activity.get()?.let {

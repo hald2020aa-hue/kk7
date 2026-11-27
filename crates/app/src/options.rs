@@ -6087,7 +6087,9 @@ impl OptionsDialog {
                 egui::Id::unique(("options-section", label)),
                 egui::Sense::click(),
             );
-            if resp.is_pointer_button_down_on() {
+            if crate::theme::current().id == "neon-pro" {
+                crate::app::phone::card(ui, row.shrink2(vec2(8.0, 3.0)), crate::theme::colors().accent, resp.is_pointer_button_down_on());
+            } else if resp.is_pointer_button_down_on() {
                 p.rect_filled(row, 0.0, crate::theme::colors().toolbar_pressed);
             }
             let text = crate::i18n::t(label);

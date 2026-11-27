@@ -326,6 +326,20 @@ pub extern "system" fn Java_com_misterdownloadmanager_android_MainActivity_nativ
     .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
 }
 
+/// Exact URL selected in the internal WebView (no text-tokenisation).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_misterdownloadmanager_android_MainActivity_nativeBrowserLink<'local>(
+    mut env: jni::EnvUnowned<'local>,
+    _this: JObject<'local>,
+    text: JString<'local>,
+    video: jni::sys::jint,
+) -> jni::sys::jint {
+    env.with_env(|env| -> jni::errors::Result<jni::sys::jint> {
+        let text = text.try_to_string(env)?;
+        Ok(if mdm_app::android::browser_link_given(&text, video != 0) { 1 } else { 0 })
+    }).resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
 /// `DownloadService.nativeStopAll()`: the downloads' notification's Stop All.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_misterdownloadmanager_android_DownloadService_nativeStopAll(

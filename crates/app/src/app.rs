@@ -587,6 +587,8 @@ enum Cmd {
     BatchClipboard,
     /// Tasks → Download video from a page… (yt-dlp, M9).
     VideoPage,
+    #[cfg(target_os = "android")]
+    InternalBrowser,
     /// Add torrent → Add magnet link… (M15): the Add torrent dialog, empty or with the
     /// clipboard's magnet.
     AddMagnet,
@@ -9499,6 +9501,12 @@ impl App {
                 Some(q) => self.find_next(&q),
                 None => self.find = Some(crate::find::Find::new(None)),
             },
+            #[cfg(target_os = "android")]
+            Cmd::InternalBrowser => {
+                if let Err(error) = crate::android::open_with_system("browser", crate::i18n::code()) {
+                    tracing::warn!("internal browser: {error}");
+                }
+            }
             Cmd::VideoPage => {
                 if self.video_dlg.is_none() {
                     self.video_dlg = Some(self.video_dialog(None));
@@ -10554,6 +10562,7 @@ impl App {
         let on = |id: &str| chosen == id;
         // i18n: View → Theme: MDM's own look, the default (IDM's layout, Windows 11's controls)
         items.push(Radio("Classic", Cmd::Theme("classic"), true, on("classic")));
+        items.push(Radio("Neon Pro", Cmd::Theme("neon-pro"), true, on("neon-pro")));
         // i18n: View → Theme: the system's own colours (its accent colour, its high contrast)
         items.push(Radio("Native", Cmd::Theme("native"), true, on("native")));
         // i18n: View → Theme: black and white with strong edges, for low vision
@@ -11023,6 +11032,8 @@ impl App {
                 true,
                 false,
             ),
+            #[cfg(target_os = "android")]
+            I("Internal browser", Cmd::InternalBrowser, true, false),
             I("&Link grabber...", Cmd::LinkGrabber, true, false),
             Sep,
             I("&Stop All", Cmd::StopAll, can_stop_all, false),
@@ -11037,6 +11048,7 @@ impl App {
             Sub("S&top queue", true, self.queue_drop(false)),
             I("S&cheduler", Cmd::Scheduler, true, false),
             I("&Options", Cmd::Options, true, false),
+            self.theme_menu(),
             I("&Language...", Cmd::ChooseLanguage, true, false),
             Sep,
             I("H&elp contents", Cmd::HelpPage("README.md"), true, false),

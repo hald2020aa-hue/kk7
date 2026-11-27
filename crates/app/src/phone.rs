@@ -1,4 +1,4 @@
-//! The main window in a phone's layout (Android, on a screen narrower than [`PHONE_WIDTH`]): one
+//! The main window in Android's adaptive layout: one
 //! column, the download list first. A bar at the top names the view and opens the categories (a
 //! drawer) and the rest of the commands (a menu); the list's rows are tall enough for a finger,
 //! each with its name, its progress and what it is doing; a bar at the bottom holds the commands
@@ -14,9 +14,32 @@ pub const PHONE_WIDTH: f32 = 600.0;
 /// The top and bottom bars' height: Android's 48 dp touch target and its margin.
 const BAR_H: f32 = 56.0;
 /// A row of the list: two lines of text and a progress bar, with room for a finger.
-const ROW_H: f32 = 80.0;
+const ROW_H: f32 = 92.0;
 /// The home screen's summary and its views' chips, under the top bar ([`App::home_header`]).
-const HEADER_H: f32 = 116.0;
+const HEADER_H: f32 = 164.0;
+const QUICK_H: f32 = 64.0;
+
+/// Keep a usable list when the IME appears or a foldable rotates into a short viewport.
+/// Return (summary height, quick actions visible, split view).
+fn adaptive_layout(width: f32, height: f32, neon_theme: bool) -> (f32, bool, bool) {
+    let summary = if height >= 390.0 { HEADER_H } else if height >= 240.0 { 46.0 } else { 0.0 };
+    let quick = neon_theme && height >= 560.0 && width >= 300.0;
+    let split = neon_theme && width >= PHONE_WIDTH && height >= 390.0;
+    (summary, quick, split)
+}
+
+#[cfg(test)]
+mod adaptive_tests {
+    use super::*;
+    #[test]
+    fn fold_cover_inner_and_keyboard() {
+        assert_eq!(adaptive_layout(320.0, 720.0, true), (164.0, true, false));
+        assert_eq!(adaptive_layout(700.0, 720.0, true), (164.0, true, true));
+        assert_eq!(adaptive_layout(700.0, 300.0, true), (46.0, false, false));
+        assert_eq!(adaptive_layout(320.0, 180.0, true), (0.0, false, false));
+        assert_eq!(adaptive_layout(700.0, 720.0, false), (164.0, false, false));
+    }
+}
 /// The space around the bars' and rows' contents.
 const PAD: f32 = 16.0;
 
@@ -279,8 +302,39 @@ pub(crate) fn sheet_back(ctx: &egui::Context) {
 
 /// Whether the main window takes the phone's layout now.
 pub fn active(ctx: &egui::Context) -> bool {
-    (cfg!(target_os = "android") && ctx.content_rect().width() < PHONE_WIDTH)
+    (cfg!(target_os = "android") && (ctx.content_rect().width() < PHONE_WIDTH || neon()))
         || std::env::var_os("MDM_PHONE").is_some()
+}
+
+fn neon() -> bool { crate::theme::current().id == "neon-pro" }
+
+pub(crate) fn card(ui: &Ui, at: egui::Rect, accent: egui::Color32, selected: bool) {
+    let p = ui.painter();
+    if at.width() <= 0.0 || at.height() <= 0.0 { return; }
+    let fill = if selected { colors().selection_inactive } else { colors().field };
+    p.rect_filled(at, 12.0, fill);
+    if selected {
+        p.rect_stroke(at.expand(2.0), 14.0, egui::Stroke::new(2.0, accent.gamma_multiply(0.22)), egui::StrokeKind::Inside);
+    }
+    p.rect_stroke(at, 12.0, egui::Stroke::new(if selected { 1.7 } else { 1.0 }, if selected { accent } else { colors().list_frame }), egui::StrokeKind::Inside);
+}
+
+/// A bounded history sampled from the engine's existing displayed byte rate, not simulated data.
+pub(crate) fn speed_graph(ui: &Ui, at: egui::Rect, key: egui::Id, rate: f64, running: bool) {
+    let now = ui.input(|i| i.time);
+    let (mut last, mut values) = ui.data(|d| d.get_temp::<(f64, Vec<f64>)>(key)).unwrap_or((now - 1.0, Vec::new()));
+    if now < last || now - last > 65.0 { values.clear(); last = now - 1.0; }
+    if now - last >= 1.0 {
+        values.push(if rate.is_finite() { rate.max(0.0) } else { 0.0 });
+        if values.len() > 60 { values.remove(0); }
+        ui.data_mut(|d| d.insert_temp(key, (now, values.clone())));
+    }
+    if running { ui.ctx().request_repaint_after(std::time::Duration::from_secs(1)); }
+    let p = ui.painter().with_clip_rect(at.intersect(ui.clip_rect()));
+    for n in 1..4 { let y = at.top() + at.height() * n as f32 / 4.0; p.hline(at.x_range(), y, egui::Stroke::new(1.0, colors().list_grid)); }
+    let max = values.iter().copied().fold(1.0f64, f64::max);
+    let points: Vec<_> = values.iter().enumerate().map(|(i, v)| pos2(at.left() + at.width() * i as f32 / 59.0, at.bottom() - at.height() * (*v / max) as f32)).collect();
+    if points.len() >= 2 { p.add(egui::Shape::line(points, egui::Stroke::new(2.0, colors().accent))); }
 }
 
 fn colors() -> &'static crate::palette::Palette {
@@ -308,21 +362,44 @@ impl App {
         let full = ui.max_rect();
         let _surface = winui::Surface::enter(full.min.x, full.max.x);
         let mut chosen: Option<(Cmd, Option<u64>)> = None;
-        ui.painter().rect_filled(full, 0.0, colors().list);
+        ui.painter().rect_filled(full, 0.0, if neon() { colors().window } else { colors().list });
 
         let top = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), BAR_H));
         let bottom = egui::Rect::from_min_max(pos2(full.min.x, full.max.y - BAR_H), full.max);
         // Under the top bar: how the downloads go, and the views at a tap ([`App::home_header`]).
+        let (header_h, quick, wide) = adaptive_layout(full.width(), full.height(), neon());
         let header = egui::Rect::from_min_size(
             pos2(full.min.x, top.max.y),
-            egui::vec2(full.width(), HEADER_H),
+            egui::vec2(full.width(), header_h),
         );
-        let body = egui::Rect::from_min_max(
-            pos2(full.min.x, header.max.y),
+        let quick_at = egui::Rect::from_min_size(pos2(full.min.x, header.max.y), egui::vec2(full.width(), if quick { QUICK_H } else { 0.0 }));
+        let content = egui::Rect::from_min_max(
+            pos2(full.min.x, quick_at.max.y.min(bottom.min.y)),
             pos2(full.max.x, bottom.min.y),
         );
-        if let Some(view) = self.home_header(ui, header) {
-            self.view = view;
+        let body = if wide { winui::rect(egui::Rect::from_min_max(content.min, pos2(content.min.x + content.width() * 0.48, content.max.y))) } else { content };
+        let preview = if wide { Some(winui::rect(egui::Rect::from_min_max(pos2(content.min.x + content.width() * 0.48 + 8.0, content.min.y), content.max))) } else { None };
+        let focus_key = egui::Id::unique("neon-selected-download");
+        if header_h == HEADER_H {
+            if let Some(view) = self.home_header(ui, header) { self.view = view; }
+        } else if header_h > 0.0 {
+            let rate = self.items.iter().map(|i| i.rate()).sum();
+            let text = format!("{} · {}", crate::i18n::tn(self.items.len() as u64, "{n} download", "{n} downloads"), model::rate(rate));
+            lead_text(ui, pos2(header.min.x + PAD, header.center().y), &elide(ui, &text, font(15.0), (header.width() - 2.0 * PAD).max(1.0)), font(15.0), colors().accent);
+        }
+        if quick {
+            let tools = [
+                (Icon::AddUrl, crate::i18n::tc("toolbar", "Add URL"), Cmd::AddUrl),
+                (Icon::PageDownloads, crate::i18n::t("Batch download"), Cmd::Batch),
+                (Icon::AddTorrent, crate::i18n::t("Torrent"), Cmd::AddMagnet),
+                (Icon::HelperVideo, crate::i18n::t("Video"), Cmd::VideoPage),
+                (Icon::Options, crate::i18n::t("Options"), Cmd::Options),
+            ];
+            let w = quick_at.width() / tools.len() as f32;
+            for (i, (icon, label, cmd)) in tools.into_iter().enumerate() {
+                let at = egui::Rect::from_min_size(pos2(quick_at.min.x + i as f32 * w, quick_at.min.y), egui::vec2(w, BAR_H));
+                if action_button(ui, at, icon, label, true, "neon-quick") { chosen = Some((cmd, None)); }
+            }
         }
 
         // The list.
@@ -345,23 +422,30 @@ impl App {
             self.list_view = self.view;
         }
         // Each row's own button: Pause while it runs, Resume when it can go on.
+        let by_id: std::collections::HashMap<_, _> = self.items.iter().map(|item| (item.id, item)).collect();
         let states: Vec<RowState> = ids
             .iter()
-            .map(|id| match self.items.iter().find(|i| i.id == *id) {
+            .map(|id| match by_id.get(id) {
                 Some(i) if i.live.is_some() => RowState::Running,
                 Some(i) if i.can_start() => RowState::Stopped,
                 _ => RowState::Done,
             })
             .collect();
-        let mut list = ui.new_child(egui::UiBuilder::new().max_rect(body));
-        let picked = phone_list(
+        let focused = ctx.data(|d| d.get_temp::<u64>(focus_key)).filter(|id| ids.contains(id)).or_else(|| if wide { ids.first().copied() } else { None });
+        let mut list = ui.new_child(egui::UiBuilder::new().id_salt("neon-main-list").max_rect(body));
+        list.set_clip_rect(body.intersect(ui.clip_rect()));
+        let picked = {
+            let _list_surface = winui::Surface::enter(body.min.x, body.max.x);
+            phone_list(
             &mut list,
             &rows,
             &selected,
             picking,
             &states,
+            &ids,
+            focused,
             &mut self.icons,
-        );
+        ) };
         if let Some((i, held)) = picked.tapped {
             if picking {
                 // A tap (or a long press) adds the row or takes it away.
@@ -374,7 +458,10 @@ impl App {
             } else {
                 // A tap opens it, as Android's lists do: a download that isn't done shows its
                 // details (its progress page), a finished one opens its file.
-                self.open_item(ids[i]);
+                ctx.data_mut(|d| d.insert_temp(focus_key, ids[i]));
+                if !wide {
+                    self.open_item(ids[i]);
+                }
             }
         }
         if let Some((i, at)) = picked.menu {
@@ -399,8 +486,20 @@ impl App {
             picking = false;
             self.selection.apply(crate::selection::Pick::Clear, &ids);
         }
+        if !picking && let Some(area) = preview {
+            let id = ctx.data(|d| d.get_temp::<u64>(focus_key)).filter(|id| ids.contains(id)).or_else(|| ids.first().copied());
+            if let Some(id) = id {
+                if let Some(item) = self.items.iter().find(|i| i.id == id) {
+                    let mut pane = ui.new_child(egui::UiBuilder::new().id_salt("neon-preview-pane").max_rect(area.shrink(8.0)));
+                    pane.set_clip_rect(area.intersect(ui.clip_rect()));
+                    let (open, cmd) = detail_preview(&mut pane, item);
+                    if open { self.open_item(id); }
+                    if let Some(cmd) = cmd { chosen = Some((cmd, Some(id))); }
+                }
+            }
+        }
         if ids.is_empty()
-            && let Some(cmd) = self.empty_state(ui, winui::rect(body))
+            && let Some(cmd) = self.empty_state(ui, if wide { winui::rect(body) } else { body })
         {
             chosen = Some((cmd, None));
         }
@@ -475,7 +574,7 @@ impl App {
             );
             set_name_filter(&mut self.list, &query);
         } else {
-            let title_room = all_at.min.x - PAD - tx;
+            let title_room = (all_at.min.x - PAD - tx).max(1.0);
             let title = elide(ui, &title, font_bold(18.0), title_room);
             lead_text(
                 ui,
@@ -582,6 +681,8 @@ impl App {
                     true,
                     Cmd::Scheduler,
                 ),
+                #[cfg(target_os = "android")]
+                (Icon::PageRemote, crate::i18n::t("Browser"), true, Cmd::InternalBrowser),
             ]
         };
         let p = ui.painter();
@@ -668,6 +769,7 @@ impl App {
     /// how many there are), then chips for All, Unfinished and Finished with their counts. The
     /// view a chip asks for.
     fn home_header(&mut self, ui: &mut Ui, at: egui::Rect) -> Option<View> {
+        let free = if neon() { self.free_space() } else { None };
         let live: Vec<&Item> = self.items.iter().filter(|i| i.live.is_some()).collect();
         let speed: f64 = live.iter().map(|i| i.rate()).sum();
         let (got, of) = live
@@ -676,11 +778,12 @@ impl App {
             .fold((0u64, 0u64), |(a, b), (d, s)| (a + d, b + s));
         let card = egui::Rect::from_min_size(
             pos2(at.min.x + 12.0, at.min.y + 10.0),
-            egui::vec2(at.width() - 24.0, 58.0),
+            egui::vec2(at.width() - 24.0, 106.0),
         );
         let screen = winui::rect(card);
         // The theme's own window colour and line, as the desktop's panels.
-        ui.painter().rect_filled(screen, 14.0, winui::BG());
+        if neon() { self::card(ui, screen, colors().accent, true); }
+        else { ui.painter().rect_filled(screen, 14.0, winui::BG()); }
         ui.painter().rect_stroke(
             screen,
             14.0,
@@ -708,7 +811,7 @@ impl App {
             pos2(card.min.x + 16.0, card.min.y + big_y),
             &big,
             font_bold(20.0),
-            colors().text,
+            if neon() { colors().accent } else { colors().text },
         );
         if let Some(small) = small {
             lead_text(
@@ -718,6 +821,12 @@ impl App {
                 font(13.0),
                 colors().muted,
             );
+        }
+        if neon() {
+            let graph = winui::rect(egui::Rect::from_min_max(pos2(card.min.x + 16.0, card.min.y + 53.0), pos2(card.max.x - 66.0, card.max.y - 26.0)));
+            if graph.width() > 30.0 { speed_graph(ui, graph, egui::Id::unique("neon-total-rate"), speed, !live.is_empty()); }
+            let disk = format!("{}: {}", crate::i18n::t("Available space"), free.map(model::size).unwrap_or_else(|| "—".into()));
+            lead_text(ui, pos2(card.min.x + 16.0, card.max.y - 13.0), &elide(ui, &disk, font(12.0), (card.width() - 25.0).max(1.0)), font(12.0), colors().muted);
         }
         // How far the running ones are together: a ring with its percent.
         if of > 0 && !live.is_empty() {
@@ -765,12 +874,8 @@ impl App {
                 crate::i18n::t(label)
             };
             let text = format!("{name}  {}", crate::i18n::integer(n as u64));
-            let w = ui
-                .painter()
-                .layout_no_wrap(text.clone(), font(14.0), colors().text)
-                .size()
-                .x
-                + 28.0;
+            let w = ((at.width() - 40.0) / 3.0).max(1.0);
+            let text = elide(ui, &text, font(13.0), (w - 10.0).max(1.0));
             let chip = egui::Rect::from_min_size(pos2(x, y), egui::vec2(w, 34.0));
             let cs = winui::rect(chip);
             let r = ui.interact(
@@ -802,10 +907,10 @@ impl App {
                 cs.center(),
                 egui::Align2::CENTER_CENTER,
                 &text,
-                font(14.0),
+                font(13.0),
                 colors().text,
             );
-            winui::expose(&r, egui::Role::Button, &text, true, None);
+            winui::expose(&r, egui::Role::Button, &format!("{name} {n}"), true, None);
             if r.clicked() && !on {
                 picked = Some(*view);
             }
@@ -928,7 +1033,9 @@ impl App {
                 for (row, node, branch) in &rows {
                     let (screen, r) = ui.allocate_exact_size(egui::vec2(w, 48.0), sense);
                     let at = winui::rect(screen);
-                    if row.selected {
+                    if neon() {
+                        card(ui, screen.shrink2(egui::vec2(8.0, 3.0)), colors().accent, row.selected);
+                    } else if row.selected {
                         ui.painter().rect_filled(
                             screen.shrink2(egui::vec2(8.0, 2.0)),
                             24.0,
@@ -1035,6 +1142,63 @@ impl App {
     }
 }
 
+/// Wide Android preview, read-only figures from the same model as the original progress dialog.
+/// All actions are dispatched through App::run; the full original dialog remains available.
+fn detail_preview(ui: &mut Ui, item: &Item) -> (bool, Option<Cmd>) {
+    let mut open = false;
+    let mut action = None;
+    let at = ui.max_rect();
+    if neon() { card(ui, at, colors().accent, false); }
+    egui::ScrollArea::vertical().id_salt("neon-wide-preview").auto_shrink([false, false]).show(ui, |ui| {
+        ui.heading(crate::i18n::t("Properties"));
+        ui.label(egui::RichText::new(&item.file_name).strong());
+        ui.label(egui::RichText::new(item.status_text()).color(colors().status_value));
+        if let Some(f) = item.fraction() {
+            let f = f.clamp(0.0, 1.0);
+            let (rc, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(1.0), 98.0), egui::Sense::hover());
+            let radius = 38.0_f32.min(rc.width() * 0.4);
+            ring(ui, rc.center(), radius, f as f32);
+            ui.painter().text(rc.center(), egui::Align2::CENTER_CENTER, crate::i18n::percent(f, 1), font_bold(18.0), colors().text);
+            ui.add(egui::ProgressBar::new(f as f32).show_percentage());
+        }
+        ui.label(format!("{} / {}", model::size(item.downloaded), item.size.map(model::size).unwrap_or_else(|| "—".into())));
+        ui.label(egui::RichText::new(model::rate(item.rate())).size(23.0).color(colors().accent));
+        ui.label(item.time_left());
+        let (graph, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(1.0), 82.0), egui::Sense::hover());
+        speed_graph(ui, graph, egui::Id::unique(("neon-file-rate", item.id)), item.rate(), item.live.is_some());
+        if let Some(snap) = item.snap.as_ref() {
+            if let Some(total) = item.size.filter(|&n| n > 0) {
+                if !snap.segments.is_empty() {
+                    let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(1.0), 24.0), egui::Sense::hover());
+                    ui.painter().rect_filled(bar, 5.0, colors().meter_track);
+                    for segment in &snap.segments {
+                        let start = (segment.start as f64 / total as f64).clamp(0.0, 1.0) as f32;
+                        let cursor = (segment.cursor as f64 / total as f64).clamp(0.0, 1.0) as f32;
+                        if cursor > start {
+                            ui.painter().rect_filled(egui::Rect::from_min_max(pos2(bar.left() + bar.width()*start, bar.top()), pos2(bar.left() + bar.width()*cursor, bar.bottom())), 0.0, colors().success);
+                        }
+                    }
+                }
+            }
+            ui.separator();
+            ui.label(format!("{} ({})", crate::i18n::t("Connections"), snap.connections.len()));
+            for c in &snap.connections {
+                ui.label(format!("#{}   {}   {}   {}", c.id + 1, model::size(c.downloaded), model::rate(c.speed as f64), crate::progress::conn_info(&c.status)));
+            }
+        }
+        ui.separator();
+        let size = egui::vec2(ui.available_width().max(1.0), 48.0);
+        if ui.add_sized(size, egui::Button::new(crate::i18n::t("Properties"))).clicked() { action = Some(Cmd::Properties); }
+        if item.status != model::Status::Complete && ui.add_sized(size, egui::Button::new(crate::i18n::t("Download progress dialog"))).clicked() { open = true; }
+        if item.live.is_some() {
+            if ui.add_sized(size, egui::Button::new(crate::i18n::t("Pause"))).clicked() { action = Some(Cmd::Stop); }
+        } else if item.can_start() && ui.add_sized(size, egui::Button::new(crate::i18n::t("Resume"))).clicked() { action = Some(Cmd::Resume); }
+        if item.status == model::Status::Complete && ui.add_sized(size, egui::Button::new(crate::i18n::t("Open"))).clicked() { action = Some(Cmd::Open); }
+        if ui.add_sized(size, egui::Button::new(crate::i18n::t("Open folder"))).clicked() { action = Some(Cmd::OpenFolder); }
+    });
+    (open, action)
+}
+
 /// What a touch on the list asked for.
 #[derive(Default)]
 struct ListTouch {
@@ -1087,6 +1251,8 @@ fn phone_list(
     selected: &[bool],
     picking: bool,
     states: &[RowState],
+    ids: &[u64],
+    focused: Option<u64>,
     icons: &mut chrome::ShellIcons,
 ) -> ListTouch {
     let mut touch = ListTouch::default();
@@ -1097,8 +1263,8 @@ fn phone_list(
         .show_rows(ui, ROW_H, rows.len(), |ui, range| {
             for i in range {
                 let row = &rows[i];
-                let (screen, r) =
-                    ui.allocate_exact_size(egui::vec2(width, ROW_H), egui::Sense::click());
+                let (screen, _) = ui.allocate_exact_size(egui::vec2(width, ROW_H), egui::Sense::hover());
+                let r = ui.interact(screen, egui::Id::unique(("neon-download-row", ids[i])), egui::Sense::click());
                 // English, mirrored where drawn.
                 let at = winui::rect(screen);
                 let state = states.get(i).copied().unwrap_or(RowState::Done);
@@ -1116,9 +1282,10 @@ fn phone_list(
                     )
                 });
                 let picked = picking && selected.get(i).copied().unwrap_or(false);
-                if picked {
-                    ui.painter()
-                        .rect_filled(screen, 0.0, colors().selection_inactive);
+                if neon() {
+                    card(ui, screen.shrink2(egui::vec2(5.0, 3.0)), colors().accent, picked || focused == Some(ids[i]));
+                } else if picked {
+                    ui.painter().rect_filled(screen, 0.0, colors().selection_inactive);
                 }
                 ripple(ui, screen, &r);
                 if picking {
@@ -1146,7 +1313,7 @@ fn phone_list(
                     (false, true) => 8.0 + 40.0 + 4.0,
                     _ => PAD,
                 };
-                let text_w = width - text_x - end;
+                let text_w = (width - text_x - end).max(1.0);
                 let name = elide(ui, &row.cells[0], font(16.0), text_w);
                 lead_text(
                     ui,
@@ -1161,6 +1328,8 @@ fn phone_list(
                 let status_color = match row.status_group {
                     "Downloading" => colors().status_value,
                     "Error" => colors().error,
+                    "Complete" => colors().success,
+                    "Stopped" | "Waiting" => colors().warning,
                     _ => colors().muted,
                 };
                 let figures: Vec<&str> = if state == RowState::Done {
@@ -1177,7 +1346,7 @@ fn phone_list(
                     .filter(|s| !s.trim().is_empty())
                     .collect::<Vec<_>>()
                     .join("  ·  ");
-                let line_y = if state == RowState::Done { 50.0 } else { 62.0 };
+                let line_y = if state == RowState::Done { 55.0 } else { 73.0 };
                 status_line(
                     ui,
                     pos2(at.min.x + text_x, at.min.y + line_y),
@@ -1198,13 +1367,16 @@ fn phone_list(
                         egui::vec2(text_w, 9.0),
                     );
                     // The desktop's progress bar (its theme's meter).
-                    winui::meter(ui.painter(), winui::rect(bar), shown);
+                    winui::meter_in(ui.painter(), winui::rect(bar), shown, status_color);
+                    if neon() {
+                        lead_text(ui, pos2(at.min.x + text_x, at.min.y + 51.0), &crate::i18n::percent(done, 1), font_bold(11.0), status_color);
+                    }
                 }
-                ui.painter().hline(
+                if !neon() { ui.painter().hline(
                     winui::rect(at.with_min_x(at.min.x + text_x)).x_range(),
                     screen.max.y - 0.5,
                     egui::Stroke::new(1.0, colors().list_grid),
-                );
+                ); }
                 // Its own buttons, over the row (a tap on one isn't one on the row).
                 let mut on_button = false;
                 if let Some(b) = button {
@@ -1369,6 +1541,7 @@ fn check_circle(ui: &Ui, id: egui::Id, screen: egui::Rect, on: bool) {
 /// A row's own round button at `screen`: the toolbar's Stop (while it runs) or Resume icon.
 fn row_button(ui: &Ui, screen: egui::Rect, pause: bool, r: &egui::Response) {
     let c = screen.center();
+    if neon() { card(ui, screen.shrink(2.0), colors().accent, r.is_pointer_button_down_on()); }
     if r.is_pointer_button_down_on() {
         ui.painter()
             .circle_filled(c, 20.0, colors().toolbar_pressed);
@@ -1583,13 +1756,18 @@ fn bar_button(
 /// A button of the bottom bar at English `at`: the toolbar's icon over its label; true when
 /// tapped.
 fn bottom_button(ui: &mut Ui, at: egui::Rect, icon: Icon, label: &str, enabled: bool) -> bool {
+    action_button(ui, at, icon, label, enabled, "phone-bottom")
+}
+
+fn action_button(ui: &mut Ui, at: egui::Rect, icon: Icon, label: &str, enabled: bool, scope: &'static str) -> bool {
     let screen = winui::rect(at);
     let sense = if enabled {
         egui::Sense::click()
     } else {
         egui::Sense::hover()
     };
-    let r = ui.interact(screen, egui::Id::unique(("phone-bottom", label)), sense);
+    let r = ui.interact(screen, egui::Id::unique((scope, label)), sense);
+    if neon() { card(ui, screen.shrink(4.0), colors().accent, enabled && r.is_pointer_button_down_on()); }
     if r.is_pointer_button_down_on() {
         ui.painter()
             .rect_filled(screen.shrink(4.0), 12.0, colors().toolbar_pressed);
@@ -1602,7 +1780,7 @@ fn bottom_button(ui: &mut Ui, at: egui::Rect, icon: Icon, label: &str, enabled: 
     ui.painter().text(
         pos2(screen.center().x, screen.min.y + 42.0),
         egui::Align2::CENTER_CENTER,
-        label,
+        elide(ui, label, font(12.0), (screen.width() - 12.0).max(1.0)),
         font(12.0),
         if enabled {
             colors().text
@@ -1610,6 +1788,7 @@ fn bottom_button(ui: &mut Ui, at: egui::Rect, icon: Icon, label: &str, enabled: 
             colors().text_disabled
         },
     );
+    winui::expose(&r, egui::Role::Button, label, enabled, None);
     enabled && r.clicked()
 }
 
@@ -1796,8 +1975,9 @@ fn menu_row(
     r: &egui::Response,
 ) {
     let p = ui.painter();
+    if neon() { card(ui, at.shrink2(egui::vec2(5.0, 3.0)), colors().accent, checked); }
     if enabled && r.is_pointer_button_down_on() {
-        p.rect_filled(at, 0.0, colors().menu_hot);
+        p.rect_filled(at, 8.0, colors().menu_hot);
     }
     let ink = if enabled {
         colors().menu_text
@@ -1872,6 +2052,10 @@ impl App {
                 if let Some(f) = frac {
                     parts.push(crate::i18n::percent(f, 0));
                 }
+                parts.push(match i.size {
+                    Some(total) => format!("{} / {}", model::size3(i.downloaded), model::size3(total)),
+                    None => model::size3(i.downloaded),
+                });
                 let rate = i.rate();
                 if rate > 0.0 {
                     parts.push(model::rate(rate));

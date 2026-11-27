@@ -4676,6 +4676,14 @@ fn paint_button(
         // Mac OS X's push buttons are round at the ends.
         ButtonLook::Aqua => (rc.height() / 2.0).floor(),
     };
+    // A single theme-level treatment reaches the existing Scheduler, URL, Video,
+    // Torrent, batch, settings and confirmation dialogs without duplicating their commands.
+    if crate::theme::current().id == "neon-pro" && crate::theme::dark_surface() && !part && rc.height() >= 34.0 {
+        let top = crate::derive::mix(face.fill, c.accent, if state == State::Disabled { 0.0 } else { 0.10 });
+        fill_shaded(p, rc, radius, &[(0.0, top), (1.0, face.fill)]);
+        p.rect_stroke(rc, radius, Stroke::new(m.border, face.border), StrokeKind::Inside);
+        return radius;
+    }
     let Some(shine) = Shine::of_button(look) else {
         p.rect_filled(rc, radius, face.fill);
         p.rect_stroke(

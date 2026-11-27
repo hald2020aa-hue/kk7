@@ -268,6 +268,17 @@ impl Icon {
         if !enabled {
             return (to_hex(c.icon_disabled), to_hex(c.icon_disabled_end));
         }
+        if crate::theme::current().id == "neon-pro" && crate::theme::dark_surface() {
+            let (a, b) = match self {
+                Icon::AddUrl | Icon::PageDownloads | Icon::PageConnection => ("#00e5ff", "#38bdf8"),
+                Icon::Resume | Icon::StartQueue | Icon::HelperChecked => ("#00ef58", "#2dd4bf"),
+                Icon::Stop | Icon::StopAll | Icon::StopQueue => ("#ffc400", "#ff9e48"),
+                Icon::Delete | Icon::DeleteCompleted => ("#ff6b86", "#f472b6"),
+                Icon::AddTorrent | Icon::Options | Icon::Scheduler | Icon::HelperVideo => ("#da8aff", "#975aff"),
+                _ => ("#00e5ff", "#b33cff"),
+            };
+            return (a.to_owned(), b.to_owned());
+        }
         match crate::theme::current().icons {
             IconStyle::Color => {
                 let (a, b) = self.gradient();

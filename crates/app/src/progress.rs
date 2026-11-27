@@ -1103,6 +1103,14 @@ impl Progress {
             winui::expose_progress(ui, bar, egui::Id::unique(("progress", item.id, "bar")), f);
         }
         y += 20.0 + 10.0;
+        if crate::theme::current().id == "neon-pro" {
+            let graph = winui::rect(egui::Rect::from_min_max(
+                egui::pos2(left, y), egui::pos2(right, y + 76.0),
+            ));
+            p.rect_filled(graph, 8.0, crate::theme::colors().field);
+            crate::app::phone::speed_graph(ui, graph.shrink(6.0), egui::Id::unique(("neon-progress-rate", item.id)), item.rate(), item.live.is_some());
+            y += 86.0;
+        }
         // Under it, the desktop's split view: each connection's part of the file, from where it
         // started, as far as it got.
         let split = item.torrent.is_none() && !segments.is_empty() && item.size.is_some();
@@ -1200,7 +1208,7 @@ impl Progress {
                 let n = (c.id + 1).to_string();
                 winui::text(&p, left, y, &n, winui::MUTED());
                 winui::text(&p, left + 28.0, y, &size3(c.downloaded), winui::TEXT());
-                let info = conn_info(&c.status);
+                let info = if c.speed > 0 { format!("{} · {}", model::rate(c.speed as f64), conn_info(&c.status)) } else { conn_info(&c.status) };
                 let (rect, cut) = winui::text_fit(&p, left + 120.0, y, &info, winui::TEXT(), right);
                 if cut {
                     winui::full_on_hover(ui, rect, ("phone-conn", c.id), &info);
@@ -2854,7 +2862,7 @@ fn connections_bg() -> Color32 {
 }
 
 /// What a connection is doing, in words: the connections table's Info.
-fn conn_info(status: &ConnStatus) -> String {
+pub(crate) fn conn_info(status: &ConnStatus) -> String {
     match status {
         ConnStatus::Connecting => crate::i18n::t("Connecting...").to_owned(),
         ConnStatus::Receiving => crate::i18n::t("Receiving data...").to_owned(),
