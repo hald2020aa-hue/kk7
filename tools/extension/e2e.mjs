@@ -1,0 +1,6073 @@
+// The whole browser integration in real browsers, with nothing on the screen: each browser runs
+// headless with its own new profile and loads the extension (target/extension, from pack.ps1);
+// the native messaging host (target/release) hands what it sends to a separate Mister Download
+// Manager instance (its own data folder, MDM_DATA_DIR; off the screens, MDM_OFFSCREEN). Each case
+// checks what MDM received (the lab server's request log, the files in MDM's folders, its list
+// through the automation API, its Download video window through UI Automation) and that the
+// browser kept nothing.
+//
+//   cargo build --release -p mdm-app -p mdm-nmhost -p mdm-labserver; tools\extension\pack.ps1
+//   node tools/extension/e2e.mjs [chrome] [brave] [edge] [helium] [firefox] [waterfox] [--only=case,case]
+//
+// Waterfox runs with Firefox's driver (E2E_WATERFOX: its program, when not installed in the usual
+// place). E2E_FIREFOX_ASK=1: Firefox's family asks what to do with each new type in every case
+// (Waterfox's default), not only in the ask case.
+//
+// The cases (per browser): folders (another extension's download in a folder of its own keeps
+// it, #578), link (a .zip link, throttled and not), ask (Firefox set to ask what to
+// do with each new type, as Waterfox is: caught before its dialog, #208), cookie (cookies and referrer
+// forwarded), startedfrom (the page a download was started from goes whole, where its Referer is
+// the site's address only; kept with the download for Refresh download address, #607), names
+// (Content-Disposition), torrents (a tracker's .torrent stays with the browser
+// while Torrent settings leave torrents alone, #1058), redirect, redirectNames (a link that only redirects to its file, named by
+// the file's own answer: filename*, a percent-encoded filename, relative and two redirects, #1427), leadon (a page going to the file by script, #374), form (POST, 303), alt (Alt+click leaves it
+// to the browser: a link, a redirect, a page's script, a bot check's page that runs its script first,
+// #1494; Firefox's own default too, #332), sites (a listed
+// site's page linking to a file on another host leaves it to the browser, #1049), manylinks
+// (Download all links on a page of 20,000 long links, in parts, to one Link grabber list), opened
+// (a PDF or MP3 the browser would show or play), openedNames
+// (such a video under its server's name, inline or an attachment, #948), pdfs (a PDF a page shows: at a signed address, typed
+// binary/octet-stream, behind a redirect, in a frame, an embed, an object; one the page's script fetches stays the page's;
+// #1087), spot (the video button
+// clear of the page's controls, #421), feeds (a video in a feed sends its post, its own file, or
+// nothing and says so, never the feed: sample pages served at LinkedIn's, Facebook's, X's,
+// Instagram's, Reddit's, TikTok's, Vimeo's, Dailymotion's addresses, #689), preview (the video button kept over a hover-to-play
+// preview the page stopped as the pointer went to it, #503), ytpreview (the same over YouTube's own
+// preview, a click sending the preview's video, not the one its main player watched last, #1271), steady (the video button keeping one place over
+// a preview that grows and shows its own buttons while hovered, #560), player (one place over a
+// player whose settings button comes and goes as the pointer moves, #899), bilibili (one free
+// corner over Bilibili's player, clear of its feedback button under the button's end, kept as the
+// pointer reaches it and the player hides its bars, #1582), csp (the video button
+// under a strict CSP), hls (the stream a player loaded), streams (HLS and DASH players handed over
+// by the button, the right-click menu and the media list, and read by yt-dlp; #155; also with no
+// .m3u8 or .mpd, served as text/plain or octet-stream, #171), sniffed (#171 without yt-dlp: such
+// streams found only when asked, by the button and the media list, a text decoy never), media (the
+// toolbar button's list of the media a tab loaded: streams, files, a protected stream; #38),
+// images (its Find images on a gallery: the largest sizes listed, each once, never a CSS
+// background, filtered by size and type, the kept ones only to Link grabber, #1781), imageslinks
+// (the right-click menu's Download all links and Download selected links on that gallery: the
+// links, and the <img> pictures marked as located on the page, #1781),
+// scripted (a video a server's program sends, named after its page with its real type: the list,
+// the button, the Download video window; #695, #800), guarded (a stream another site's server
+// serves to its page's player only: looked up and downloaded with the Origin and Referer the
+// browser sent, #900), played (a feed whose page names no video: the file and the stream the tab
+// played for each video, found by its length, downloaded by MDM; never the next video, #1092),
+// beforeplay (a video that hasn't played: the stream address its page wrote for the player looked
+// up, only what the page names asked for, "Download best" downloading it, #1826),
+// qualities (the button's menu: a stream's qualities looked up by MDM, with their sizes; the one
+// picked downloads with its progress window only, MDM's main window hidden), page (the menu on a
+// real video page, E2E_VIDEO_PAGE, and the line E2E_VIDEO_PICK downloaded: off by default), video (shown,
+// clicked, dragged, kept; "never on the site" in the last browser; the button's clicks go through
+// its menu's "Open in…" to the Download video window, as in csp, hls, streams, sniffed and
+// inplace), panelOptions (the button follows Options in an open tab: off, on, its size, the site
+// listed; #532, #1278), videoFocus (mouse idle/fullscreen and keyboard focus, #480), fullscreen (one
+// button over a video in full screen, the page's or the player's, and after the extension was
+// updated while it showed, #336), reconnect (a tab opened while
+// the host couldn't start gets the button once it can, no reload; then MDM started by a click, and
+// reached after it quits and starts again, #474), start (MDM not running: the host starts it),
+// exclude (the toolbar button's "Never take downloads from <site>" says it worked, and is switched
+// off again, #404), recent (the popup's Downloads tab: MDM's downloads with their icons, states and
+// actions, the toolbar button's count, #1496),
+// remote (Send downloads to → Another MDM, #157: paired from the popup, a link downloaded by a
+// headless MDM; E2E_REMOTE_URL for one running elsewhere, such as the Docker image: remoteServer),
+// remotelinks (Download all links and Download selected links to that other MDM: the types MDM
+// takes, 100 at most, the toolbar button's tip, a server stopped ending the batch, #1596),
+// byhand (the copy loaded here by hand says so in its popup, with its browser's store, #1613),
+// part (the button's menu's "Download a part from here...": the Download video window, its part
+// starting where the player is, #1662), calm (the button round in a feed and whole over a big
+// player by default, faint as the pointer rests or leaves, dragged outside the player and kept for
+// the site, back in its corner from its menu and from the popup's Reset; #1735 and the feedback
+// of 2026-11-23; E2E_SHOTS: <lang>-<scheme>-feed.png, -player.png, -faint.png, -outside.png,
+// -popup-reset.png).
+//
+// Screenshots for a pull request (Chromium only): E2E_LANG=de (or ar, ...) starts the browser in that
+// language, so the extension shows its _locales text of it; with E2E_SHOTS=<folder> the `qualities`
+// case saves <lang>-looking.png, <lang>-video-tab.png and <lang>-audio-tab.png there (the player and
+// the menu), before the pick, and the `scripted` case <lang>-media-list.png (the popup's list) and
+// <lang>-video-window.png. Neither changes anything when unset. E2E_APP_LANG sets MDM's own language
+// (the words it sends the menu). E2E_COLOR_SCHEME=light|dark shows the pages (the video button with
+// them) and the popup in those colours.
+//
+// Windows: the host is registered for the current user while it runs (nmhost --register, as the
+// installer does) and unregistered at the end. Every registry key that touches (the browsers'
+// host entries and Chrome's external extension, per user and for everyone) is exported first
+// and checked byte for byte at the end; one that differs is put back from its copy. An installed
+// copy's registration for everyone (HKLM) is only read. With E2E_HOST_NAME, the host is registered
+// under that test name instead, for the run's browsers only (testHost). Your own browser
+// profiles are never used, nor the clipboard. Every process started here is stopped at the end.
+//
+// Linux (the lab's VM, tools/lab/linux-vm): the host's manifests (files) are written instead, and
+// put back byte for byte at the end (E2E_REPLACE_HOST=1 lets it replace a copy already
+// registered there); the cases that read the app's windows (UI Automation) are skipped.
+//
+// Ports: each server this run starts (the lab server, the proxy, the remote case's headless MDM,
+// Firefox's remote protocol) listens on a free port the system picks, so two runs side by side
+// never meet. E2E_PORT=<n> fixes them from one base instead: the lab server on n, the proxy on
+// n+1, the headless MDM on n+2, Firefox's protocol on n+3. Two runs side by side also need their
+// own E2E_WORK, E2E_HOST_NAME and programs (CARGO_TARGET_DIR: each run stops its own app's copies).
+//
+// Deadlines: a browser that doesn't answer a command within E2E_COMMAND_TIMEOUT seconds (30;
+// E2E_NAVIGATION_TIMEOUT, 90, for a navigation, a new session or loading the extension) is
+// stopped, and its case and the browser's remaining ones fail with the command's name. Ctrl+C,
+// SIGTERM, a closed console or an uncaught error still stop everything this run started and put
+// the registry (or the host's manifests) back.
+//
+// The programs: target/release, or CARGO_TARGET_DIR's release folder when it is set.
+import { spawn, spawnSync } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import http from "node:http";
+import net from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+export const release = path.join(process.env.CARGO_TARGET_DIR ? path.resolve(process.env.CARGO_TARGET_DIR) : path.join(root, "target"), "release");
+export const exe = (name) => path.join(release, process.platform === "win32" ? `${name}.exe` : name);
+// E2E_WORK: the run's own folder instead (its profiles, the instance's data and downloads).
+const work = process.env.E2E_WORK ? path.resolve(process.env.E2E_WORK) : path.join(root, "target", "e2e");
+// E2E_PORT: the ports from one base (see Ports above), else 0: each server's own free port, read
+// back as it starts (run(), before any case).
+const BASE_PORT = process.env.E2E_PORT ? Number(process.env.E2E_PORT) : 0;
+if (!Number.isInteger(BASE_PORT) || BASE_PORT < 0 || BASE_PORT > 65532) throw new Error(`E2E_PORT: ${process.env.E2E_PORT} isn't a port (1 to 65532)`);
+let PORT = BASE_PORT;
+let LAB = `http://127.0.0.1:${PORT}`;
+// The proxy case (#42): a proxy on 127.0.0.1 that alone knows the name lab.mdm.test (the lab
+// server), standing for a VPN extension's proxy.
+let PROXY_PORT = BASE_PORT && BASE_PORT + 1;
+const PROXY_HOST = "lab.mdm.test";
+const proxyLog = [];
+// The same proxy as a PAC script (Chromium's case: inline, or by its address on that proxy).
+const pac = () => `function FindProxyForURL(url, host) { return host === "${PROXY_HOST}" ? "PROXY 127.0.0.1:${PROXY_PORT}" : "DIRECT"; }`;
+// The extension's own address in Firefox (moz-extension://UUID/), fixed in the test profile so
+// its pages (the popup) can be opened in a tab.
+const FIREFOX_ID = "integration@misterdownloadmanager.com";
+// The extensions the browsers load: pack.ps1's, or their copies for E2E_HOST_NAME (testHost).
+let chromiumExtension = path.join(root, "target", "extension", "chromium");
+let firefoxExtension = { type: "archivePath", path: path.join(root, "target", "extension", "mdm-firefox.xpi") };
+const FIREFOX_UUID = "5d0c3b8e-7a51-4c1e-9f0a-38e2c4a1d7b6";
+
+const pf = process.env.ProgramFiles || "C:\\Program Files";
+const pf86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+const local = process.env.LOCALAPPDATA || "";
+const WIN = process.platform === "win32";
+const BROWSERS = WIN
+  ? {
+      chrome: ["chromium", [`${pf}\\Google\\Chrome\\Application\\chrome.exe`, `${local}\\Google\\Chrome\\Application\\chrome.exe`]],
+      brave: ["chromium", [`${pf}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe`, `${local}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe`]],
+      edge: ["chromium", [`${pf86}\\Microsoft\\Edge\\Application\\msedge.exe`, `${pf}\\Microsoft\\Edge\\Application\\msedge.exe`]],
+      // Helium (#685): installed for the user by its setup, or its zip unpacked anywhere (E2E_HELIUM).
+      helium: ["chromium", [process.env.E2E_HELIUM || "", `${local}\\imput\\Helium\\Application\\chrome.exe`].filter(Boolean)],
+      firefox: ["firefox", [`${pf}\\Mozilla Firefox\\firefox.exe`, `${pf86}\\Mozilla Firefox\\firefox.exe`]],
+      // Firefox's family: the same driver (E2E_WATERFOX: a copy unpacked elsewhere).
+      waterfox: ["firefox", [process.env.E2E_WATERFOX || "", `${pf}\\Waterfox\\waterfox.exe`].filter(Boolean)],
+    }
+  : // Linux (the lab's VM: tools/lab/linux-vm).
+    {
+      chrome: ["chromium", ["/usr/bin/google-chrome", "/opt/google/chrome/chrome"]],
+      brave: ["chromium", ["/usr/bin/brave-browser"]],
+      edge: ["chromium", ["/usr/bin/microsoft-edge"]],
+      // Helium's .deb (helium-bin), else its tarball or AppImage unpacked anywhere (E2E_HELIUM).
+      helium: ["chromium", [process.env.E2E_HELIUM || "", "/usr/bin/helium", "/opt/helium/helium"].filter(Boolean)],
+      // A .deb or tarball Firefox; else Ubuntu's Snap.
+      firefox: ["firefox", ["/usr/lib/firefox/firefox", "/opt/firefox/firefox", "/snap/bin/firefox"]],
+      waterfox: ["firefox", [process.env.E2E_WATERFOX || "", "/usr/lib/waterfox/waterfox", "/opt/waterfox/waterfox"].filter(Boolean)],
+    };
+
+export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+export async function until(what, ms, test) {
+  const end = Date.now() + ms;
+  for (;;) {
+    const v = await test();
+    if (v) return v;
+    if (Date.now() > end) throw new Error(`timed out: ${what}`);
+    await sleep(250);
+  }
+}
+// A tab's page loaded (its own scripts run): what each session's `tab` waits for before handing
+// it out. Its HTML is there before its scripts at the end of it run: the popup's Reset button
+// exists for hundreds of milliseconds before popup.js gives it its listener, and a click then
+// does nothing.
+export const PAGE_LOADED = 'document.readyState === "complete" && location.protocol !== "about:"';
+// A process and its children, stopped.
+export function killPid(pid) {
+  if (WIN) return spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)]);
+  spawnSync("pkill", ["-KILL", "-P", String(pid)]);
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Gone already.
+  }
+}
+export const killTree = (p) => p && p.exitCode === null && killPid(p.pid);
+// Every process using a test profile: a browser's launcher may exit and leave the browser (Firefox),
+// so its tree is not enough. Only processes naming that folder are stopped.
+export function killProfile(profile) {
+  if (!WIN) return spawnSync("pkill", ["-KILL", "-f", profile]);
+  const folder = profile.replace(/'/g, "''");
+  spawnSync("powershell", [
+    "-NoProfile",
+    "-Command",
+    `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains('${folder}') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+  ]);
+}
+
+// How long a browser may take to answer one command (E2E_COMMAND_TIMEOUT, seconds), and a
+// navigation, a new session or loading the extension (E2E_NAVIGATION_TIMEOUT): past it the
+// browser is taken as stuck and stopped. Without a deadline, one command a browser never answered
+// held the whole run (4.7 hours once), `until` included, as it waits on that same command.
+function seconds(name, otherwise) {
+  const v = process.env[name];
+  if (!v) return otherwise * 1000;
+  const n = Number(v);
+  if (!(n > 0)) throw new Error(`${name}: ${v} isn't a number of seconds`);
+  return n * 1000;
+}
+export const COMMAND_MS = seconds("E2E_COMMAND_TIMEOUT", 30);
+export const NAVIGATION_MS = seconds("E2E_NAVIGATION_TIMEOUT", 90);
+const SLOW_COMMANDS = new Set(["Page.navigate", "Extensions.loadUnpacked", "session.new", "webExtension.install", "browsingContext.navigate"]);
+
+// A browser that didn't answer a command in time (it was stopped), or went away.
+export class BrowserGone extends Error {}
+
+// The commands sent to a browser and their answers, by id, each with its deadline. `stop` stops
+// the browser when one isn't answered; from then on (or once the browser went away: `fail`) every
+// command waiting and every later one fails with that reason, at once.
+class Commands {
+  constructor(browser, stop) {
+    this.browser = browser;
+    this.stop = stop;
+    this.next = 1;
+    this.waiting = new Map();
+    // Event listeners (`on`): each gets every event.
+    this.listeners = [];
+    // Why the browser can't answer any more (a BrowserGone), or null.
+    this.failure = null;
+  }
+  on(f) {
+    this.listeners.push(f);
+  }
+  // `write(id)` sends command `id`; its answer, or a BrowserGone past its deadline.
+  command(method, write) {
+    if (this.failure) return Promise.reject(this.failure);
+    const id = this.next++;
+    const ms = SLOW_COMMANDS.has(method) ? NAVIGATION_MS : COMMAND_MS;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const e = new BrowserGone(`${this.browser} didn't answer ${method} in ${ms / 1000} s: stopped it`);
+        this.fail(e);
+        try {
+          this.stop();
+        } catch (err) {
+          console.error(`stopping ${this.browser}: ${err.message}`);
+        }
+      }, ms);
+      this.waiting.set(id, { resolve, reject, method, timer });
+      try {
+        write(id);
+      } catch (e) {
+        clearTimeout(timer);
+        this.waiting.delete(id);
+        reject(new BrowserGone(`${this.browser}: ${method} couldn't be sent: ${e.message}`));
+      }
+    });
+  }
+  // The answer to command `id` (null: not one of ours).
+  answer(id, error, result) {
+    const w = id && this.waiting.get(id);
+    if (!w) return false;
+    this.waiting.delete(id);
+    clearTimeout(w.timer);
+    error ? w.reject(new Error(`${w.method}: ${error}`)) : w.resolve(result);
+    return true;
+  }
+  fail(e) {
+    if (!this.failure) this.failure = e;
+    for (const w of this.waiting.values()) {
+      clearTimeout(w.timer);
+      w.reject(this.failure);
+    }
+    this.waiting.clear();
+  }
+}
+
+// Chromium's DevTools protocol over --remote-debugging-pipe (needed to load an extension).
+// `browser` names it in errors; `stop` stops it when a command isn't answered (its process tree).
+export class Pipe extends Commands {
+  constructor(proc, { browser = "the browser", stop = () => killTree(proc) } = {}) {
+    super(browser, stop);
+    this.out = proc.stdio[3];
+    let buf = "";
+    proc.stdio[4].on("data", (d) => {
+      buf += d.toString("utf8");
+      let i;
+      while ((i = buf.indexOf("\0")) >= 0) {
+        const m = JSON.parse(buf.slice(0, i));
+        buf = buf.slice(i + 1);
+        if (process.env.E2E_DEBUG && m.method) console.error("cdp", m.method, JSON.stringify(m.params).slice(0, 300));
+        if (!this.answer(m.id, m.error && (m.error.message || JSON.stringify(m.error)), m.result) && m.method) {
+          for (const f of this.listeners) f(m);
+        }
+      }
+    });
+    const gone = (why) => this.fail(new BrowserGone(`${browser} ${why}`));
+    this.out.on("error", (e) => gone(`closed its pipe: ${e.message}`));
+    proc.stdio[4].on("error", (e) => gone(`closed its pipe: ${e.message}`));
+    proc.on("exit", (code) => gone(`exited (${code})`));
+  }
+  send(method, params = {}, sessionId) {
+    return this.command(method, (id) => this.out.write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0"));
+  }
+}
+
+// Firefox's WebDriver BiDi over its remote-debugging WebSocket (`browser` and `stop` as Pipe's).
+class Bidi extends Commands {
+  constructor(ws, { browser, stop }) {
+    super(browser, stop);
+    this.ws = ws;
+    ws.addEventListener("message", (e) => {
+      const m = JSON.parse(e.data);
+      if (!this.answer(m.id, m.type === "error" && `${m.error} ${m.message}`, m.result) && m.type === "event") {
+        for (const f of this.listeners) f(m);
+      }
+    });
+    ws.addEventListener("close", () => this.fail(new BrowserGone(`${browser} closed its remote protocol`)));
+  }
+  send(method, params = {}) {
+    return this.command(method, (id) => this.ws.send(JSON.stringify({ id, method, params })));
+  }
+}
+
+// What the button's pill looks like (in its closed shadow root, which only the browser's own
+// protocol reaches): its size and background.
+const PILL_STYLE = `function () {
+  const p = this.querySelector ? this.querySelector(".pill") : this;
+  if (!p) return null;
+  const r = p.getBoundingClientRect();
+  const s = getComputedStyle(p);
+  return JSON.stringify({ h: r.height, w: r.width, image: s.backgroundImage, color: s.backgroundColor });
+}`;
+
+// The qualities' menu the button's click opens (video.js), in the same closed shadow root: null
+// while closed; else whether it is still looking, its message, its tabs (none when the video has one
+// kind of quality only: name, selected), its rows (name, size; the selected tab's) and "Open
+// in…", each with its middle on the page (where a click lands). `reveal` ("row": the first row,
+// "open": "Open in…") scrolls that into the menu's view first (the menu scrolls past 300 px).
+const PICKS = (reveal = "") => `function () {
+  const m = this.querySelector ? this.querySelector(".menu") : null;
+  if (!m || !m.classList.contains("open")) return null;
+  const open = m.querySelector('[data-act="window"]');
+  const shown = ${JSON.stringify(reveal)} === "open" ? open : ${JSON.stringify(reveal)} === "row" ? m.querySelector(".rows button[data-choice]") : null;
+  if (shown) shown.scrollIntoView({ block: "nearest" });
+  const at = (e) => { const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+  const note = m.querySelector(".note");
+  const box = m.getBoundingClientRect();
+  return JSON.stringify({
+    box: { l: box.left, t: box.top, r: box.right, b: box.bottom },
+    busy: Boolean(m.querySelector(".rows .skrow")),
+    note: note.hidden ? "" : note.textContent,
+    caps: [...m.querySelectorAll(".rows .cap")].map((c) => c.textContent),
+    // Each line: "Download best" first (top), then the numbered ones under VIDEO and AUDIO.
+    rows: (() => { const out = []; let kind = "top";
+      for (const e of m.querySelectorAll(".rows > *")) {
+        if (e.classList.contains("cap")) { kind = e.dataset.kind; continue; }
+        if (e.localName !== "button") continue;
+        const f = e.querySelector(".f");
+        out.push({ kind: e.classList.contains("top") ? "top" : kind, name: [(e.querySelector(".q") || e.querySelector(".lead")).textContent, f && f.firstChild ? f.firstChild.textContent : ""].filter(Boolean).join(" "),
+          size: (e.querySelector(".z") || {}).textContent || "", choice: e.dataset.choice ?? null, ...at(e) });
+      }
+      return out; })(),
+    open: { text: open.textContent, ...at(open) },
+    part: (() => { const e = m.querySelector('[data-act="part"]'); return e ? { text: e.textContent, ...at(e) } : null; })(),
+    // #1735: the filters' chips (what it lists, its file types, its codecs), and "Put the button
+    // back in its corner" when it shows.
+    filters: [...m.querySelectorAll(".filters .fc")].map((e) => ({ dim: e.dataset.filter, value: e.dataset.value, on: e.getAttribute("aria-checked") === "true", text: e.textContent, ...at(e) })),
+    home: (() => { const e = m.querySelector('[data-act="home"]'); return e && !e.hidden ? { text: e.textContent, ...at(e) } : null; })(),
+  });
+}`;
+// Where the button's arrow (its menu) is.
+const MORE_AT = `function () {
+  const m = this.querySelector(".more");
+  const r = m && m.getBoundingClientRect();
+  return JSON.stringify(r && r.width ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null);
+}`;
+// The look-ups the browser's button asked of the test instance so far (the host logs each), with
+// when: [ms since the epoch].
+function lookupsLogged() {
+  let text = "";
+  try {
+    text = fs.readFileSync(path.join(data, "logs", "mdm.log"), "utf8");
+  } catch {
+    return [];
+  }
+  return [...text.matchAll(/^(\S+)\s+INFO nmhost .*looked up the qualities of a video/gm)].map((m) => Date.parse(m[1].replace(/(\.\d{3})\d*Z$/, "$1Z")));
+}
+
+// A click on the button's arrow, as a person makes it: the pointer onto it first, a moment (the tab
+// shows its grip as the pointer comes, and keeps its end where it was), then the click where the
+// arrow is now.
+async function clickArrow(session) {
+  const first = await session.pill(MORE_AT);
+  if (!first) return null;
+  await session.mouse(first.x, first.y);
+  await sleep(300);
+  const at = (await session.pill(MORE_AT)) || first;
+  await session.mouse(at.x, at.y, "click");
+  return at;
+}
+// The button's state (ready, looking, sending, sent, warn, err, off, drm), its words and its
+// buttons ("Show", "Retry"…), each with where a click lands.
+const PILL_STATE = `function () {
+  const p = this.querySelector(".pill");
+  const at = (e) => { const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+  return JSON.stringify(p && {
+    state: p.dataset.state,
+    text: this.querySelector(".label").textContent,
+    chip: this.querySelector(".chip").textContent,
+    compact: p.classList.contains("compact"),
+    faint: p.classList.contains("faint"),
+    acts: [...this.querySelectorAll(".act")].map((b) => ({ act: b.dataset.act, text: b.textContent, ...at(b) })),
+  });
+}`;
+
+// Each driver opens `page` in the browser with the extension loaded and returns `evaluate`
+// (an expression in the page, run as a user's action), `mouse` (move or click at page
+// coordinates, Alt held with `{alt: true}`), `navigate` (`{download: true}`: the address
+// becomes a download, the page stays), `key`, `pill`, `picks` (PICKS), `major` (the browser's
+// version) and `close`. `ready` resolves once the extension reached the native host.
+async function chromium(bin, profile, dl, page, ready, name = "Chromium") {
+  // The browser's own download folder, without asking, set as a user would: the profile's
+  // preferences. (DevTools' Browser.setDownloadBehavior would take downloads past extensions.)
+  fs.mkdirSync(path.join(profile, "Default"), { recursive: true });
+  fs.writeFileSync(
+    path.join(profile, "Default", "Preferences"),
+    JSON.stringify({
+      download: { default_directory: dl, prompt_for_download: false, directory_upgrade: true },
+      ...(process.env.E2E_LANG ? { intl: { accept_languages: process.env.E2E_LANG } } : {}),
+    }),
+  );
+  const proc = spawn(
+    bin,
+    [
+      "--headless",
+      "--remote-debugging-pipe",
+      "--enable-unsafe-extension-debugging",
+      `--user-data-dir=${profile}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--window-size=1280,900",
+      ...(process.env.E2E_LANG ? [`--lang=${process.env.E2E_LANG}`] : []),
+      // The remote case's server has its own certificate (in real use the popup's "Open it" lets
+      // the person accept it once); the lab's pages are plain http.
+      "--ignore-certificate-errors",
+      // Linux: no keyring prompt for the test profile.
+      ...(WIN ? [] : ["--password-store=basic"]),
+      // E2E_CHROMIUM_ARGS: more switches, space separated (screenshots: --lang=de, --force-dark-mode).
+      ...(process.env.E2E_CHROMIUM_ARGS || "").split(" ").filter(Boolean),
+      "about:blank",
+    ],
+    { env: process.env, stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], windowsHide: true },
+  );
+  const cdp = new Pipe(proc, {
+    browser: name,
+    stop: () => {
+      killTree(proc);
+      killProfile(profile);
+    },
+  });
+  try {
+    const { product } = await cdp.send("Browser.getVersion");
+    const major = Number((/\/(\d+)\./.exec(product) || [])[1]) || 0;
+    const { id } = await cdp.send("Extensions.loadUnpacked", { path: chromiumExtension });
+    // Its service worker runs, and has asked the host for the rules.
+    const sw = await until("the extension's service worker", 15000, async () =>
+      (await cdp.send("Target.getTargets")).targetInfos.find((t) => t.type === "service_worker" && t.url.includes(id)),
+    );
+    await ready();
+    let trace = async () => "";
+    if (process.env.E2E_DEBUG) {
+      // Every downloads / native call the extension makes, with its result (E2E_DEBUG).
+      const { sessionId: s } = await cdp.send("Target.attachToTarget", { targetId: sw.targetId, flatten: true });
+      await cdp.send("Runtime.evaluate", { expression: `
+        globalThis.trace = []; const t0 = Date.now();
+        for (const [obj, names] of [[chrome.downloads, ["pause", "resume", "cancel", "erase"]], [chrome.runtime, ["sendNativeMessage"]]]) {
+          for (const n of names) {
+            const orig = obj[n].bind(obj);
+            obj[n] = (...a) => { trace.push([Date.now() - t0, n, JSON.stringify(a).slice(0, 300)]);
+              return orig(...a).then(r => { trace.push([Date.now() - t0, n + " ok", JSON.stringify(r).slice(0, 80)]); return r; },
+                                     e => { trace.push([Date.now() - t0, n + " err", e.message]); throw e; }); };
+          }
+        }
+        chrome.downloads.onCreated.addListener(d => trace.push([Date.now() - t0, "created", d.url, d.filename]));
+        chrome.downloads.onChanged.addListener(d => trace.push([Date.now() - t0, "changed", JSON.stringify(d).slice(0, 140)]));
+        "ok"` }, s);
+      // With the browser's downloads, the session rules and what the extension stored.
+      trace = async () =>
+        (
+          await cdp.send(
+            "Runtime.evaluate",
+            {
+              expression: `(async () => JSON.stringify({ trace, downloads: (await chrome.downloads.search({})).map(d => [d.url, d.filename, d.state, d.error, d.mime]),
+                rules: await chrome.declarativeNetRequest.getSessionRules(), stored: await chrome.storage.local.get(null) }))()`,
+              awaitPromise: true,
+            },
+            s,
+          )
+        ).result.value;
+    }
+    const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
+    const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
+    await cdp.send("Page.enable", {}, sessionId);
+    // E2E_COLOR_SCHEME (light or dark): the page in those colours, and the video button with it.
+    if (process.env.E2E_COLOR_SCHEME) {
+      await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: process.env.E2E_COLOR_SCHEME }] }, sessionId);
+    }
+    const evaluate = async (expression) => {
+      const r = await cdp.send("Runtime.evaluate", { expression, userGesture: true, awaitPromise: true, returnByValue: true }, sessionId);
+      if (r.exceptionDetails) throw new Error(`evaluate: ${r.exceptionDetails.text} ${expression}`);
+      return r.result.value;
+    };
+    const navigate = async (url, { download = false } = {}) => {
+      await cdp.send("Page.navigate", { url }, sessionId);
+      // A download leaves the page that was there; else the new page, loaded.
+      const want = new URL(url).href;
+      await until(`the page ${url}`, 15000, () =>
+        evaluate("[location.href, document.readyState]")
+          .then(([at, state]) => state === "complete" && (download || at === want))
+          .catch(() => false),
+      );
+    };
+    await navigate(page);
+    // `act`: "move" (the default), "click", or "down" / "up" for a drag.
+    let held = false;
+    const mouse = async (x, y, act = "move", { alt = false } = {}) => {
+      const at = { x, y, button: "left", buttons: held ? 1 : 0, modifiers: alt ? 1 : 0 };
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at }, sessionId);
+      if (act === "click" || act === "down") {
+        held = true;
+        await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...at, buttons: 1, clickCount: 1 }, sessionId);
+      }
+      if (act === "click" || act === "up") {
+        held = false;
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at, buttons: 0, clickCount: 1 }, sessionId);
+      }
+    };
+    // A PNG of a page rectangle (CSS pixels, the device's own pixel ratio) in `file`.
+    const shot = async (file, box) => {
+      const x = Math.max(0, Math.floor(box.l));
+      const y = Math.max(0, Math.floor(box.t));
+      const clip = { x, y, width: Math.ceil(box.r) - x, height: Math.ceil(box.b) - y, scale: 1 };
+      const { data } = await cdp.send("Page.captureScreenshot", { format: "png", clip }, sessionId);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, Buffer.from(data, "base64"));
+    };
+    const KEYS = { ArrowDown: 40, ArrowUp: 38, Enter: 13, Tab: 9, End: 35, Home: 36 };
+    const key = async (k) => {
+      for (const type of ["keyDown", "keyUp"]) {
+        // Enter carries its text, as a real key press does.
+        const text = type === "keyDown" && k === "Enter" ? { text: "\r" } : {};
+        await cdp.send("Input.dispatchKeyEvent", { type, key: k, code: k, windowsVirtualKeyCode: KEYS[k], ...text }, sessionId);
+      }
+    };
+    // A function (PILL_STYLE, PICKS) run on the button's closed shadow root (DevTools sees
+    // through it): its JSON answer, parsed; null without the button.
+    const inShadow = async (fn) => {
+      const { root: doc } = await cdp.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+      const find = (n) => {
+        if (n.nodeName === "MDM-VIDEO-BUTTON") return n;
+        for (const c of [...(n.children || []), ...(n.shadowRoots || []), ...(n.contentDocument ? [n.contentDocument] : [])]) {
+          const f = find(c);
+          if (f) return f;
+        }
+        return null;
+      };
+      const host = find(doc);
+      const shadow = host && (host.shadowRoots || [])[0];
+      if (!shadow) return null;
+      const { object } = await cdp.send("DOM.resolveNode", { nodeId: shadow.nodeId }, sessionId);
+      const r = await cdp.send("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: fn, returnByValue: true }, sessionId);
+      return r.result.value ? JSON.parse(r.result.value) : null;
+    };
+    // One at a time: DOM.getDocument gives the whole tree new node ids, so a second call between
+    // another's getDocument and its resolveNode left that one with an id that no longer exists
+    // ("No node with given id found"; the feeds case watches the button's words while it clicks).
+    let shadowQueue = Promise.resolve();
+    const inShadowOnce = (fn) => {
+      const run = shadowQueue.then(() => inShadow(fn));
+      shadowQueue = run.catch(() => {});
+      return run;
+    };
+    const pill = (fn = PILL_STYLE) => inShadowOnce(fn);
+    const picks = (reveal) => inShadowOnce(PICKS(reveal));
+    // Another tab at `url` (the extension's own pages too): its `evaluate` and `close`.
+    const tab = async (url) => {
+      const { targetId: tid } = await cdp.send("Target.createTarget", { url });
+      const { sessionId: s } = await cdp.send("Target.attachToTarget", { targetId: tid, flatten: true });
+      const ev = async (expression) => {
+        const r = await cdp.send("Runtime.evaluate", { expression, userGesture: true, awaitPromise: true, returnByValue: true }, s);
+        if (r.exceptionDetails) throw new Error(`evaluate: ${r.exceptionDetails.text} ${expression}`);
+        return r.result.value;
+      };
+      // Target.createTarget answers while the tab is still on about:blank or reading its page:
+      // handed out once that page has loaded (PAGE_LOADED), as Firefox's navigate waits.
+      await until(`${url}, loaded`, 15000, () => ev(PAGE_LOADED).catch(() => false));
+      // A picture of its page, cut to the body (the popup's 300 px), for a PR's body; in
+      // E2E_COLOR_SCHEME's colours (light or dark) when set, else the system's.
+      const shot = async (file) => {
+        const scheme = process.env.E2E_COLOR_SCHEME;
+        if (scheme) {
+          await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] }, s);
+          await sleep(300);
+        }
+        const r = JSON.parse(await ev("JSON.stringify(document.body.getBoundingClientRect())"));
+        // Its margin as much on each side as above it (a right-to-left page's body is at the right).
+        const clip = { x: Math.max(0, r.left - r.top), y: 0, width: Math.ceil(r.width + 2 * r.top), height: Math.ceil(r.bottom + r.top), scale: 2 };
+        const { data } = await cdp.send("Page.captureScreenshot", { format: "png", clip }, s);
+        fs.writeFileSync(file, Buffer.from(data, "base64"));
+      };
+      // Its viewport as the popup's (#1496): what the popup lays out in, and where a dialog opens;
+      // at twice the pixels, as the pictures are taken (the file icons asked for that size).
+      const viewport = (width, height) => cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 2, mobile: false }, s);
+      return { evaluate: ev, shot, viewport, close: () => cdp.send("Target.closeTarget", { targetId: tid }).catch(() => {}) };
+    };
+    // The tab's requests to `hosts` (http and https) answered here, never by the network:
+    // `respond(url)` gives { status, type, body }, or null for the network's own answer.
+    let respond = () => null;
+    const serve = async (hosts, answer) => {
+      respond = answer;
+      cdp.on((m) => {
+        if (m.sessionId !== sessionId || m.method !== "Fetch.requestPaused") return;
+        const r = respond(m.params.request.url);
+        const { requestId } = m.params;
+        if (!r) return cdp.send("Fetch.continueRequest", { requestId }, sessionId).catch(() => {});
+        const headers = [{ name: "Content-Type", value: r.type }];
+        cdp.send("Fetch.fulfillRequest", { requestId, responseCode: r.status, responseHeaders: headers, body: Buffer.from(r.body).toString("base64") }, sessionId).catch(() => {});
+      });
+      const patterns = hosts.flatMap((h) => [`http://${h}/*`, `https://${h}/*`]).map((urlPattern) => ({ urlPattern, requestStage: "Request" }));
+      await cdp.send("Fetch.enable", { patterns }, sessionId);
+    };
+    return {
+      // Why the browser can't answer any more (it didn't answer in time, or went away), or null.
+      gone: () => cdp.failure,
+      extension: id,
+      base: `chrome-extension://${id}/`,
+      serve,
+      major,
+      evaluate,
+      mouse,
+      screenshot: async (file) => {
+        const { data } = await cdp.send("Page.captureScreenshot", { format: "png" }, sessionId);
+        fs.writeFileSync(file, Buffer.from(data, "base64"));
+      },
+      navigate,
+      key,
+      shot,
+      pill,
+      picks,
+      tab,
+      trace,
+      // The errors in the extension's service worker's console so far (#42: none), Runtime.enable
+      // replaying those logged before it.
+      workerErrors: async () => {
+        const s = (await cdp.send("Target.attachToTarget", { targetId: sw.targetId, flatten: true })).sessionId;
+        const seen = [];
+        cdp.on((m) => {
+          if (m.sessionId !== s) return;
+          if (m.method === "Runtime.exceptionThrown") seen.push(`exception: ${m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text}`);
+          if (m.method === "Runtime.consoleAPICalled" && (m.params.type === "error" || m.params.type === "warning")) {
+            seen.push(`${m.params.type}: ${m.params.args.map((a) => a.value ?? a.description).join(" ")}`);
+          }
+          if (m.method === "Log.entryAdded" && m.params.entry.level === "error") seen.push(`log: ${m.params.entry.text}`);
+        });
+        await cdp.send("Runtime.enable", {}, s);
+        await cdp.send("Log.enable", {}, s);
+        await sleep(500);
+        return seen;
+      },
+      // Run `expression` in the extension's service worker.
+      inExtension: async (expression) => {
+        const s = (await cdp.send("Target.attachToTarget", { targetId: sw.targetId, flatten: true })).sessionId;
+        const r = await cdp.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, s);
+        if (r.exceptionDetails) throw new Error(`in the extension: ${r.exceptionDetails.text} ${expression}`);
+        return r.result.value;
+      },
+      // Another extension (the folder `dir`), loaded beside ours, and its page `page` open in a tab:
+      // that tab's `evaluate` and `close` (the proxy case's stand-in VPN extension sets the
+      // browser's proxy there, as one does). A page, not its service worker: the browser may
+      // stop an idle worker, a page keeps its extension API while open.
+      loadExtension: async (dir, page, api = "proxy") => {
+        const { id: other } = await cdp.send("Extensions.loadUnpacked", { path: dir });
+        const t = await tab(`chrome-extension://${other}/${page}`);
+        await until("the other extension's page", 10000, () => t.evaluate(`document.readyState === 'complete' && typeof chrome === 'object' && Boolean(chrome.${api})`).catch(() => false));
+        return t;
+      },
+      close: () => {
+        killTree(proc);
+        killProfile(profile);
+      },
+    };
+  } catch (e) {
+    killTree(proc);
+    killProfile(profile);
+    throw e;
+  }
+}
+
+async function firefox(bin, profile, dl, page, ready, name = "Firefox") {
+  // Its remote protocol's port: E2E_PORT's +3, else 0, a free one it picks and says
+  // ("WebDriver BiDi listening on ws://127.0.0.1:<port>", on its error output).
+  const askedPort = BASE_PORT && BASE_PORT + 3;
+  const pref = (k, v) => `user_pref(${JSON.stringify(k)}, ${JSON.stringify(v)});`;
+  fs.writeFileSync(
+    path.join(profile, "user.js"),
+    [
+      pref("browser.download.dir", dl),
+      pref("browser.download.folderList", 2),
+      pref("browser.download.useDownloadDir", true),
+      // E2E_FIREFOX_ASK=1: every case with the browser asking what to do with each new type
+      // (Waterfox's default, #208); else it doesn't (Firefox's).
+      pref("browser.download.always_ask_before_handling_new_types", process.env.E2E_FIREFOX_ASK === "1"),
+      pref("browser.shell.checkDefaultBrowser", false),
+      pref("datareporting.policy.dataSubmissionEnabled", false),
+      pref("browser.aboutwelcome.enabled", false),
+      // An extension's host permissions are granted without asking (MV3 asks the user).
+      pref("extensions.originControls.grantByDefault", true),
+      // Alt+click saves the link, as in Chromium (Firefox's default ignores an Alt+click on a
+      // link: then nothing is downloaded at all, by the browser or MDM).
+      pref("browser.altClickSave", true),
+      // The extension's address, known in advance (its popup opened in a tab).
+      pref("extensions.webextensions.uuids", JSON.stringify({ [FIREFOX_ID]: FIREFOX_UUID })),
+      // E2E_COLOR_SCHEME (light or dark): the pages, the extension's popup with them, in those
+      // colours (0 dark, 1 light).
+      ...(process.env.E2E_COLOR_SCHEME ? [pref("layout.css.prefers-color-scheme.content-override", process.env.E2E_COLOR_SCHEME === "dark" ? 0 : 1)] : []),
+    ].join("\n"),
+  );
+  const proc = spawn(bin, ["-headless", "-no-remote", "-profile", profile, "--remote-debugging-port", String(askedPort), "--width=1280", "--height=900"], {
+    // Headless even where its launcher restarts it without the flag. System access (this test
+    // profile only, its protocol on 127.0.0.1): to open the extension's own pages in a tab.
+    env: { ...process.env, MOZ_HEADLESS: "1", MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: "1" },
+    stdio: ["ignore", "ignore", "pipe"],
+    windowsHide: true,
+  });
+  let said = "";
+  let port = askedPort;
+  proc.stderr.on("data", (d) => {
+    if (port) return;
+    said = (said + d).slice(-4000);
+    const m = /WebDriver BiDi listening on ws:\/\/[^\s/]+:(\d+)/.exec(said);
+    if (m) port = Number(m[1]);
+  });
+  const stop = () => {
+    killTree(proc);
+    killProfile(profile);
+  };
+  try {
+    await until(`${name}'s remote protocol's port`, 30000, () => port);
+    // Each try to reach it ends in 5 s (a browser stuck before its first answer).
+    const ws = await until(`${name}'s remote protocol`, 30000, () =>
+      new Promise((resolve) => {
+        const s = new WebSocket(`ws://127.0.0.1:${port}/session`);
+        const late = setTimeout(() => {
+          s.close();
+          resolve(null);
+        }, 5000);
+        s.addEventListener("open", () => {
+          clearTimeout(late);
+          resolve(s);
+        });
+        s.addEventListener("error", () => {
+          clearTimeout(late);
+          resolve(null);
+        });
+      }),
+    );
+    const bidi = new Bidi(ws, { browser: name, stop });
+    // The remote case's server certificate, as in Chromium (above).
+    const { capabilities } = await bidi.send("session.new", { capabilities: { alwaysMatch: { acceptInsecureCerts: true } } });
+    const major = Number(String(capabilities.browserVersion || "").split(".")[0]) || 0;
+    // A temporary add-on (unsigned is fine), gone with the profile.
+    const { extension } = await bidi.send("webExtension.install", { extensionData: firefoxExtension });
+    await ready();
+    const { contexts } = await bidi.send("browsingContext.getTree", {});
+    const context = contexts[0].context;
+    // BiDi returns objects in its own form: the value goes through JSON instead.
+    const evaluate = async (expression) => {
+      const json = `(async () => JSON.stringify(await (${expression})))()`;
+      const r = await bidi.send("script.evaluate", { expression: json, target: { context }, awaitPromise: true, userActivation: true });
+      if (r.type === "exception") throw new Error(`evaluate: ${r.exceptionDetails.text} ${expression}`);
+      return r.result.value === undefined ? undefined : JSON.parse(r.result.value);
+    };
+    const navigate = async (url, { download = false } = {}) => {
+      if (!download) return bidi.send("browsingContext.navigate", { context, url, wait: "complete" });
+      // The navigation ends in a download (an error for BiDi): the page stays.
+      await bidi.send("browsingContext.navigate", { context, url, wait: "none" }).catch(() => {});
+      await sleep(500);
+      await until("the page", 15000, () => evaluate("document.readyState === 'complete'").catch(() => false));
+    };
+    await navigate(page);
+    // Alt held: a key source pressing it around the pointer's actions, tick for tick.
+    const mouse = async (x, y, act = "move", { alt = false } = {}) => {
+      const actions = [{ type: "pointerMove", x: Math.round(x), y: Math.round(y) }];
+      if (act === "click" || act === "down") actions.push({ type: "pointerDown", button: 0 });
+      if (act === "click" || act === "up") actions.push({ type: "pointerUp", button: 0 });
+      const sources = [{ type: "pointer", id: "mouse", actions }];
+      if (alt) {
+        const ALT = "\uE00A";
+        sources.push({
+          type: "key",
+          id: "keyboard",
+          actions: [{ type: "keyDown", value: ALT }, ...actions.slice(1).map(() => ({ type: "pause" })), { type: "keyUp", value: ALT }],
+        });
+        actions.push({ type: "pause" });
+      }
+      await bidi.send("input.performActions", { context, actions: sources });
+    };
+    // WebDriver key codes.
+    const KEYS = { ArrowDown: "\uE015", ArrowUp: "\uE013", Enter: "\uE007", Tab: "\uE004", End: "\uE010", Home: "\uE011" };
+    const key = (k) =>
+      bidi.send("input.performActions", {
+        context,
+        actions: [{ type: "key", id: "keyboard", actions: [{ type: "keyDown", value: KEYS[k] }, { type: "keyUp", value: KEYS[k] }] }],
+      });
+    // A function (PILL_STYLE, PICKS) run on the button's closed shadow root, which BiDi
+    // serializes with includeShadowTree "all": its JSON answer, parsed; null without the button.
+    const inShadow = async (fn) => {
+      const r = await bidi.send("script.evaluate", {
+        expression: `document.querySelector("mdm-video-button")`,
+        target: { context },
+        awaitPromise: false,
+        resultOwnership: "root",
+        serializationOptions: { includeShadowTree: "all", maxDomDepth: 1 },
+      });
+      const shadow = r.result && r.result.value && r.result.value.shadowRoot;
+      if (!shadow || !shadow.sharedId) return null;
+      const c = await bidi.send("script.callFunction", {
+        functionDeclaration: fn,
+        this: { sharedId: shadow.sharedId },
+        target: { context },
+        awaitPromise: false,
+      });
+      return c.result && c.result.value ? JSON.parse(c.result.value) : null;
+    };
+    const pill = (fn = PILL_STYLE) => inShadow(fn);
+    const picks = (reveal) => inShadow(PICKS(reveal));
+    // Another tab at `url` (the extension's own pages too): its `evaluate` and `close`.
+    // A web page can't be sent to an extension's page: the browser's own window (its chrome
+    // scope, MOZ_REMOTE_ALLOW_SYSTEM_ACCESS) opens that tab instead.
+    const tab = async (url) => {
+      let c;
+      if (url.startsWith("moz-extension:")) {
+        const { contexts: windows } = await bidi.send("browsingContext.getTree", { "moz:scope": "chrome" });
+        const open = `gBrowser.addTab(${JSON.stringify(url)}, { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() }) && "opened"`;
+        await bidi.send("script.evaluate", { expression: open, target: { context: windows[0].context }, awaitPromise: false, "moz:scope": "chrome" });
+        c = await until("the extension's page in a tab", 10000, async () => {
+          const { contexts: tabs } = await bidi.send("browsingContext.getTree", {});
+          return (tabs.find((x) => x.url === url) || {}).context;
+        });
+      } else {
+        c = (await bidi.send("browsingContext.create", { type: "tab", background: true })).context;
+        await bidi.send("browsingContext.navigate", { context: c, url, wait: "complete" });
+      }
+      const ev = async (expression) => {
+        const json = `(async () => JSON.stringify(await (${expression})))()`;
+        const r = await bidi.send("script.evaluate", { expression: json, target: { context: c }, awaitPromise: true, userActivation: true });
+        if (r.type === "exception") throw new Error(`evaluate: ${r.exceptionDetails.text} ${expression}`);
+        return r.result.value === undefined ? undefined : JSON.parse(r.result.value);
+      };
+      // An extension's page is found by its address in the tree, which it has before it loaded:
+      // handed out once it has (PAGE_LOADED; a web page's navigate above already waited).
+      if (url.startsWith("moz-extension:")) await until(`${url}, loaded`, 15000, () => ev(PAGE_LOADED).catch(() => false));
+      // A click at the centre of `selector`, as a user's (the tab brought to the front first):
+      // what a browser lets an extension's page ask a permission from.
+      const click = async (selector) => {
+        // An extension's page is privileged: BiDi won't bring it to the front, the browser's
+        // window does.
+        await inBrowser(`(() => { const t = [...gBrowser.tabs].find((x) => x.linkedBrowser.currentURI.spec === ${JSON.stringify(url)}); if (t) gBrowser.selectedTab = t; return Boolean(t); })()`);
+        const r = await ev(`(() => { const b = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`);
+        await bidi.send("input.performActions", {
+          context: c,
+          actions: [{ type: "pointer", id: "mouse", actions: [{ type: "pointerMove", x: Math.round(r[0]), y: Math.round(r[1]) }, { type: "pointerDown", button: 0 }, { type: "pointerUp", button: 0 }] }],
+        });
+      };
+      // A picture of its page cut to the body, as Chromium's (the tab brought to the front first).
+      const shot = async (file) => {
+        await inBrowser(`(() => { const t = [...gBrowser.tabs].find((x) => x.linkedBrowser.currentURI.spec === ${JSON.stringify(url)}); if (t) gBrowser.selectedTab = t; return Boolean(t); })()`);
+        await sleep(300);
+        const r = await ev("JSON.parse(JSON.stringify(document.body.getBoundingClientRect()))");
+        const clip = { type: "box", x: Math.max(0, r.left - r.top), y: 0, width: Math.ceil(r.width + 2 * r.top), height: Math.ceil(r.bottom + r.top) };
+        const { data } = await bidi.send("browsingContext.captureScreenshot", { context: c, clip });
+        fs.writeFileSync(file, Buffer.from(data, "base64"));
+      };
+      return { evaluate: ev, click, shot, close: () => bidi.send("browsingContext.close", { context: c }).catch(() => {}) };
+    };
+    // An expression in the browser's own window (its chrome scope): its preferences, its console,
+    // its permission prompts.
+    const inBrowser = async (expression) => {
+      const { contexts: windows } = await bidi.send("browsingContext.getTree", { "moz:scope": "chrome" });
+      const json = `(async () => JSON.stringify(await (${expression})))()`;
+      const r = await bidi.send("script.evaluate", { expression: json, target: { context: windows[0].context }, awaitPromise: true, "moz:scope": "chrome" });
+      if (r.type === "exception") throw new Error(`in the browser: ${r.exceptionDetails.text} ${expression}`);
+      return r.result.value === undefined ? undefined : JSON.parse(r.result.value);
+    };
+    // The page's right-click menu at (x, y), and its item `label` chosen (#155): a right-click,
+    // then the item activated in the browser's own window (its chrome scope). "chosen", or the
+    // items there were.
+    const menu = async (x, y, label) => {
+      await bidi.send("input.performActions", {
+        context,
+        actions: [{ type: "pointer", id: "mouse", actions: [{ type: "pointerMove", x: Math.round(x), y: Math.round(y) }, { type: "pointerDown", button: 2 }, { type: "pointerUp", button: 2 }] }],
+      });
+      const { contexts: windows } = await bidi.send("browsingContext.getTree", { "moz:scope": "chrome" });
+      const pick = `(async () => {
+        const menu = document.getElementById("contentAreaContextMenu");
+        const shown = () => [...menu.querySelectorAll("menuitem")].filter((m) => !m.hidden);
+        for (let i = 0; i < 50 && !shown().some((m) => m.label === ${JSON.stringify(label)}); i++) await new Promise((r) => setTimeout(r, 100));
+        const item = shown().find((m) => m.label === ${JSON.stringify(label)});
+        if (!item) { const all = shown().map((m) => m.label).join(" | "); menu.hidePopup(); return "not there: " + all; }
+        const at = gContextMenu ? { onVideo: gContextMenu.onVideo, mediaURL: gContextMenu.mediaURL, linkURL: gContextMenu.linkURL } : null;
+        menu.activateItem(item);
+        return "chosen " + JSON.stringify(at);
+      })()`;
+      const r = await bidi.send("script.evaluate", { expression: pick, target: { context: windows[0].context }, awaitPromise: true, "moz:scope": "chrome" });
+      if (r.type === "exception") throw new Error(`the menu: ${r.exceptionDetails.text}`);
+      return r.result.value;
+    };
+    // The tab's requests to `hosts` answered here (as in Chromium, above).
+    let respond = () => null;
+    const serve = async (hosts, answer) => {
+      respond = answer;
+      bidi.on((m) => {
+        if (m.method !== "network.beforeRequestSent" || !m.params.isBlocked) return;
+        const request = m.params.request.request;
+        const r = respond(m.params.request.url);
+        if (!r) return bidi.send("network.continueRequest", { request }).catch(() => {});
+        bidi
+          .send("network.provideResponse", {
+            request,
+            statusCode: r.status,
+            reasonPhrase: r.status === 200 ? "OK" : "Not Found",
+            headers: [{ name: "Content-Type", value: { type: "string", value: r.type } }],
+            body: { type: "string", value: r.body },
+          })
+          .catch(() => {});
+      });
+      await bidi.send("session.subscribe", { events: ["network.beforeRequestSent"], contexts: [context] });
+      const urlPatterns = hosts.flatMap((hostname) => ["http", "https"].map((protocol) => ({ type: "pattern", protocol, hostname })));
+      await bidi.send("network.addIntercept", { phases: ["beforeRequestSent"], urlPatterns, contexts: [context] });
+    };
+    return {
+      // Why the browser can't answer any more (it didn't answer in time, or went away), or null.
+      gone: () => bidi.failure,
+      extension,
+      serve,
+      // Another add-on (the folder `dir`), temporary beside ours: its ID; and removed again.
+      // `dir` a folder, or an extensionData (ours again, as an update brings it: firefoxExtension).
+      install: async (dir) =>
+        (await bidi.send("webExtension.install", { extensionData: typeof dir === "string" ? { type: "path", path: dir } : dir })).extension,
+      uninstall: (id) => bidi.send("webExtension.uninstall", { extension: id }),
+      inBrowser,
+      base: `moz-extension://${FIREFOX_UUID}/`,
+      major,
+      evaluate,
+      mouse,
+      menu,
+      // A PNG of what the tab shows (its viewport) in `file`.
+      screenshot: async (file) => {
+        const { data } = await bidi.send("browsingContext.captureScreenshot", { context });
+        fs.writeFileSync(file, Buffer.from(data, "base64"));
+      },
+      navigate,
+      key,
+      pill,
+      picks,
+      tab,
+      close: () => {
+        ws.close();
+        stop();
+      },
+    };
+  } catch (e) {
+    stop();
+    throw e;
+  }
+}
+
+// ---- the test instance of Mister Download Manager ----------------------------------------------
+
+let data = "";
+let downloads = "";
+// The yt-dlp the test instance uses (the streams case), or "" (none found).
+let ytdlp = "";
+// The ffmpeg the qualities case needs (E2E_FFMPEG, else one on PATH).
+let ffmpeg = "";
+const appExe = exe("misterdownloadmanager");
+
+// One command to the instance over its channel (ipc.json), its one-line answer.
+function ipc(cmd, dir = data) {
+  return new Promise((resolve, reject) => {
+    let ep;
+    try {
+      ep = JSON.parse(fs.readFileSync(path.join(dir, "ipc.json"), "utf8"));
+    } catch (e) {
+      return reject(e);
+    }
+    const s = net.connect(ep.port, "127.0.0.1", () => s.write(JSON.stringify({ token: ep.token, ...cmd }) + "\n"));
+    let answer = "";
+    s.setTimeout(5000, () => s.destroy(new Error("no answer")));
+    s.on("data", (d) => (answer += d));
+    s.on("end", () => resolve(answer.trim()));
+    s.on("error", reject);
+  });
+}
+
+// The instance's list (the automation API, on in the test settings).
+async function mdmList() {
+  const a = JSON.parse(await ipc({ query: "list" }));
+  if (!a.downloads) throw new Error(`the automation API: ${JSON.stringify(a)}`);
+  return a.downloads;
+}
+
+// The running copies of target/release's app (each with its crash monitor, the same program with
+// --crash-monitor): [pid, is the monitor]. A headless one (the remote case's server) isn't one.
+function appProcesses() {
+  if (!WIN) {
+    // /proc: each process's program and arguments.
+    const found = [];
+    for (const pid of fs.readdirSync("/proc").filter((d) => /^\d+$/.test(d))) {
+      try {
+        if (fs.readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "") !== appExe) continue;
+        const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+        if (!args.includes("--headless")) found.push([Number(pid), args.includes("--crash-monitor")]);
+      } catch {
+        // Gone, or another user's.
+      }
+    }
+    return found;
+  }
+  const p = appExe.replace(/'/g, "''");
+  const out = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-Command",
+      `Get-CimInstance Win32_Process -Filter "Name='misterdownloadmanager.exe'" | Where-Object { $_.ExecutablePath -eq '${p}' -and $_.CommandLine -notlike '*--headless*' } | ForEach-Object { "$($_.ProcessId) $($_.CommandLine -like '*--crash-monitor*')" }`,
+    ],
+    { encoding: "utf8" },
+  ).stdout;
+  return out
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((l) => l.trim().split(" "))
+    .map(([pid, monitor]) => [Number(pid), monitor === "True"]);
+}
+// Copies that ran before the test (never touched), and so ours.
+let before = new Set();
+const ourPids = () => appProcesses().map(([pid]) => pid).filter((p) => !before.has(p));
+// Our app itself, without its monitor.
+const ourApps = () => appProcesses().filter(([pid, monitor]) => !monitor && !before.has(pid)).map(([pid]) => pid);
+
+async function startApp() {
+  if (stopping) throw new Error("the run is stopping");
+  if (ourPids().length) return;
+  fs.rmSync(path.join(data, "ipc.json"), { force: true });
+  spawn(appExe, [], { env: process.env, stdio: "ignore", detached: false });
+  await until("the test instance", 20000, () => mdmList().then(() => true, () => false));
+}
+
+// Saved and quit through its channel; stopped if it doesn't.
+async function stopApp() {
+  if (!ourPids().length) return;
+  await ipc({ exit: true }).catch(() => {});
+  try {
+    await until("the test instance to quit", 15000, () => !ourPids().length);
+  } catch {
+    for (const pid of ourPids()) killPid(pid);
+  }
+}
+
+// The download named `file` in MDM's `sub` folder (under the test's Downloads), complete in its
+// list and on disk with `size` bytes; its list entry.
+async function arrived(file, size, sub = "Compressed", ms = 45000) {
+  const want = path.join(downloads, sub, file);
+  let last = null;
+  try {
+    return await until(`${file} in Mister Download Manager`, ms, async () => {
+      const item = (await mdmList().catch(() => [])).find((d) => d.file === file);
+      last = item || last;
+      if (item && item.status === "Error") throw new Error(`${file}: MDM's download failed: ${item.error}`);
+      if (!item || item.status !== "Complete") return null;
+      if (path.resolve(item.path) !== path.resolve(want)) throw new Error(`${file} saved as ${item.path}, not ${want}`);
+      return fs.existsSync(want) && fs.statSync(want).size === size && item;
+    });
+  } catch (e) {
+    if (last && !/MDM's|saved as/.test(e.message)) e.message += ` (MDM: ${last.status} ${last.downloaded}/${last.size} ${last.path})`;
+    if (!last) {
+      const list = await mdmList().catch(() => []);
+      e.message += ` (MDM's latest: ${list.slice(-2).map((d) => `${d.file} ${d.status} ${d.path}`).join("; ") || "none"})`;
+    }
+    throw e;
+  }
+}
+
+// The lab server's request log for `p` (a path), oldest first.
+async function requests(p) {
+  const log = await (await fetch(`${LAB}/_log`)).json();
+  return log.filter((e) => e.path === p).sort((a, b) => a.req - b.req);
+}
+// What a failed fetch says: undici's "fetch failed" names its cause only there.
+const clearLog = () =>
+  fetch(`${LAB}/_log`, { method: "DELETE" }).catch((e) => {
+    throw new Error(`the lab server's log: ${e.message} (${(e.cause && (e.cause.code || e.cause.message)) || "no cause"})`);
+  });
+const brief = (e) => `${e.method} ${e.status} ${e.outcome} ${e.range || "-"}`;
+
+// ---- another Mister Download Manager (the remote case, #157) -------------------------------------
+
+// The server the remote case sends downloads to: E2E_REMOTE_URL names one already running (the
+// Docker image: E2E_REMOTE_PAIR is a command printing a pairing code, `docker exec mdm
+// misterdownloadmanager-cli pair`, and E2E_REMOTE_DOWNLOADS the folder its downloads land in, as
+// seen from here); else target/release's app runs headless here, on 127.0.0.1, with its own data
+// and download folders under target/e2e, on E2E_PORT's +2 or a free port (freePort).
+let remote = null;
+async function remoteServer() {
+  if (remote) return remote;
+  if (process.env.E2E_REMOTE_URL) {
+    const cmd = process.env.E2E_REMOTE_PAIR;
+    const downloads = process.env.E2E_REMOTE_DOWNLOADS;
+    if (!cmd || !downloads) throw new Error("E2E_REMOTE_URL needs E2E_REMOTE_PAIR and E2E_REMOTE_DOWNLOADS");
+    const code = async () => {
+      const out = spawnSync(cmd, { shell: true, encoding: "utf8" });
+      const m = [...String(out.stdout).matchAll(/code (\d{4}) (\d{4})/g)].pop();
+      if (!m) throw new Error(`no pairing code from ${cmd}: ${out.stdout}${out.stderr}`);
+      return m[1] + m[2];
+    };
+    remote = { url: process.env.E2E_REMOTE_URL, downloads, code };
+    return remote;
+  }
+  const dir = path.join(work, "remote");
+  const rdata = path.join(dir, "data");
+  const downloads = path.join(dir, "Downloads");
+  fs.mkdirSync(rdata, { recursive: true });
+  const port = BASE_PORT ? BASE_PORT + 2 : await freePort();
+  const args = ["--headless", "--data", rdata, "--downloads", downloads, "--listen", "127.0.0.1", "--port", String(port)];
+  const proc = spawn(appExe, args, { env: { ...process.env, MDM_DATA_DIR: rdata }, stdio: "ignore", windowsHide: true });
+  const code = async () => {
+    const a = JSON.parse(await ipc({ pair: true }, rdata));
+    if (!a.code) throw new Error(`no pairing code: ${JSON.stringify(a)}`);
+    return a.code;
+  };
+  remote = { url: `https://127.0.0.1:${port}/`, downloads, code, proc, data: rdata };
+  await until("the headless MDM", 20000, () => code().then(() => true, () => false));
+  return remote;
+}
+// The popup `popup` (its Settings tab) paired with the other MDM `r` as a user pairs: Another MDM
+// chosen, its address and code typed, Pair. What the status says then (it names the server).
+async function pairRemote(popup, r) {
+  await until("the popup", 10000, () => popup.evaluate(`document.readyState === "complete" && Boolean(document.getElementById("to-remote"))`).catch(() => false));
+  await sleep(300);
+  // Another MDM chosen: its address and code boxes show (the popup's script may still be
+  // starting: chosen again until they do).
+  await until("the address and code boxes", 10000, () =>
+    popup.evaluate(`(document.getElementById("remote-form").hidden && document.getElementById("to-remote").click(), !document.getElementById("remote-form").hidden)`),
+  );
+  const code = await r.code();
+  await popup.evaluate(`(() => {
+    document.getElementById("remote-url").value = ${JSON.stringify(r.url)};
+    document.getElementById("remote-code").value = ${JSON.stringify(code)};
+    document.getElementById("remote-pair").click();
+    return true; })()`);
+  // Paired: the boxes close and the status names the server.
+  const host = new URL(r.url).host;
+  const said = await until("paired", 15000, () =>
+    popup.evaluate(`(() => {
+      const bad = document.getElementById("remote-said");
+      if (!bad.hidden && bad.textContent) return "refused: " + bad.textContent;
+      const text = document.getElementById("status-text").textContent;
+      const ok = document.getElementById("remote-form").hidden && document.getElementById("status").classList.contains("ok");
+      return ok && text.includes(${JSON.stringify(host)}) ? text : ""; })()`),
+  ).catch(async (e) => {
+    e.message += ` (the popup: ${await popup.evaluate(`document.getElementById("status-text").textContent`).catch(() => "?")})`;
+    throw e;
+  });
+  if (said.startsWith("refused")) throw new Error(`pairing ${said}`);
+  return said;
+}
+
+// The page's right-click menu's Download all links (`selected`: Download selected links) as a
+// user picks it: in Chromium its handler called as the menu's click calls it (headless Chromium
+// shows no menu), in Firefox's family the real menu, opened on the page's line without a link.
+async function linksMenu(t, page, selected = false) {
+  if (t.kind === "chromium") {
+    const id = selected ? "mdm-selected" : "mdm-all";
+    return t.session.inExtension(`(async () => {
+      const tab = (await chrome.tabs.query({})).find((x) => x.url === ${JSON.stringify(page)});
+      if (!tab) return "no tab";
+      await menuClicked({ menuItemId: ${JSON.stringify(id)}, pageUrl: tab.url, frameId: 0 }, tab);
+      return "called";
+    })()`);
+  }
+  if (selected) throw new Skip("Download selected links: Chromium only here");
+  const at = await t.session.evaluate(`(() => { const b = document.getElementById("blank").getBoundingClientRect(); return [b.left + 4, b.top + b.height / 2]; })()`);
+  const clicked = await t.session.menu(at[0], at[1], "Download all links with Mister Download Manager");
+  if (!String(clicked).startsWith("chosen")) throw new Error(`the menu: ${clicked}`);
+  return clicked;
+}
+
+async function stopRemote() {
+  if (!remote || !remote.proc) return;
+  await ipc({ exit: true }, remote.data).catch(() => {});
+  await until("the headless MDM to quit", 15000, () => remote.proc.exitCode !== null).catch(() => killTree(remote.proc));
+}
+// The file `name` of `size` bytes somewhere in `dir` (a category's folder): its path.
+function findFile(dir, name, size) {
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      const f = findFile(p, name, size);
+      if (f) return f;
+    } else if (e.name === name && fs.statSync(p).size === size) return p;
+  }
+  return null;
+}
+const sizeOf = async (url) => Number((await fetch(url, { method: "HEAD" })).headers.get("content-length"));
+
+// The browser kept nothing: its download folder is empty (no .part, no .crdownload, no
+// "Unconfirmed", no placeholder). Chromium deletes its working file (`<uuid>.tmp`) on its own
+// after the extension cancels its copy, sometimes a second or two later on a busy computer or
+// with an older app's host (seen past 5 s while other builds ran): a file still there after 10 s is kept.
+async function keptNothing(dl) {
+  await sleep(1000);
+  let left = fs.readdirSync(dl);
+  for (const end = Date.now() + 9000; left.length && Date.now() < end; left = fs.readdirSync(dl)) await sleep(250);
+  if (left.length) throw new Error(`the browser kept: ${left.join(", ")}`);
+}
+
+// ---- the test instance's windows (Windows) ----------------------------------------------------
+
+// Elsewhere they are not read (Win32 and UI Automation): the cases that need them are skipped.
+const NO_UIA = "the app's windows are read through UI Automation (Windows only)";
+
+// Its windows: titles, closing the one titled `close`, and those that show on a screen. Collected
+// in C#: what a PowerShell callback prints is lost.
+function appWindows(pid, close = "", onScreen = false) {
+  if (!WIN) throw new Skip(NO_UIA);
+  const script = `
+Add-Type @"
+using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
+public static class W {
+  public delegate bool P(IntPtr h, IntPtr l);
+  [StructLayout(LayoutKind.Sequential)] public struct R { public int L, T, Rt, B; }
+  [DllImport("user32.dll")] static extern bool EnumWindows(P f, IntPtr l);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out R r);
+  [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
+  public static List<string> Of(uint pid, string close, bool onScreen) {
+    var r = new List<string>();
+    int sx = GetSystemMetrics(76), sy = GetSystemMetrics(77), sw = GetSystemMetrics(78), sh = GetSystemMetrics(79);
+    EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p);
+      if (p == pid && IsWindowVisible(h)) { var sb = new StringBuilder(256); GetWindowText(h, sb, 256);
+        var t = sb.ToString(); R rc; GetWindowRect(h, out rc);
+        bool seen = rc.Rt > sx && rc.L < sx + sw && rc.B > sy && rc.T < sy + sh && rc.Rt > rc.L && rc.B > rc.T;
+        if (t.Length > 0 && (!onScreen || seen)) { r.Add(t); if (t == close) PostMessage(h, 0x10, IntPtr.Zero, IntPtr.Zero); } }
+      return true; }, IntPtr.Zero);
+    return r;
+  }
+}
+"@
+[W]::Of(${pid}, '${close.replace(/'/g, "''")}', $${onScreen})`;
+  return spawnSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8" }).stdout.split(/\r?\n/).filter(Boolean);
+}
+
+// The address in the Download video window's "Page address" box, read through UI Automation
+// (the app's windows have AccessKit adapters, also off the screens); null while it isn't open.
+function videoAddress(pid) {
+  if (!WIN) throw new Skip(NO_UIA);
+  const script = `
+Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes
+$A = [System.Windows.Automation.AutomationElement]
+$pid_ = New-Object System.Windows.Automation.PropertyCondition($A::ProcessIdProperty, ${pid})
+$edit = New-Object System.Windows.Automation.AndCondition(
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)),
+  (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, 'Page address')))
+foreach ($w in $A::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $pid_)) {
+  $e = $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $edit)
+  if ($e) { 'ADDRESS ' + $e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value; break }
+}`;
+  const out = spawnSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8" }).stdout;
+  const m = /^ADDRESS (.*)$/m.exec(out);
+  return m ? m[1].trim() : null;
+}
+
+const VIDEO_WINDOW = "Download video from a page";
+
+// The Download video window's "Download Now", pressed through UI Automation (its Invoke, as a
+// screen reader does: no pointer, nothing on the screen). Whether it was there to press.
+function videoDownloadNow(pid) {
+  if (!WIN) throw new Skip(NO_UIA);
+  const script = `
+Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes
+$A = [System.Windows.Automation.AutomationElement]
+$pid_ = New-Object System.Windows.Automation.PropertyCondition($A::ProcessIdProperty, ${pid})
+$now = New-Object System.Windows.Automation.AndCondition(
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)),
+  (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, 'Download Now')))
+$edit = New-Object System.Windows.Automation.AndCondition(
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)),
+  (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, 'Page address')))
+foreach ($w in $A::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $pid_)) {
+  if (-not $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $edit)) { continue }
+  $b = $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $now)
+  if ($b -and $b.Current.IsEnabled) { $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); 'PRESSED'; break }
+}`;
+  return /PRESSED/.test(spawnSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8" }).stdout);
+}
+
+// Whether the Download video window's "Download Now" is enabled: yt-dlp looked the address up
+// and offered something to download (#155). null while the window isn't open.
+function videoReady(pid) {
+  if (!WIN) throw new Skip(NO_UIA);
+  const script = `
+Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes
+$A = [System.Windows.Automation.AutomationElement]
+$pid_ = New-Object System.Windows.Automation.PropertyCondition($A::ProcessIdProperty, ${pid})
+$now = New-Object System.Windows.Automation.AndCondition(
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)),
+  (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, 'Download Now')))
+$edit = New-Object System.Windows.Automation.AndCondition(
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)),
+  (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, 'Page address')))
+# The window's accessible root is named after the app, not its title: the one with "Page address".
+foreach ($w in $A::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $pid_)) {
+  if (-not $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $edit)) { continue }
+  $b = $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $now)
+  if ($b) { 'READY ' + $b.Current.IsEnabled; break }
+}`;
+  const out = spawnSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8" }).stdout;
+  const m = /^READY (\w+)$/m.exec(out);
+  return m ? m[1] === "True" : null;
+}
+
+// #155: a stream handed over by `trigger` (the button over the player, the right-click menu, the
+// media list) reaches yt-dlp as its manifest, with the page's cookie and the page as referrer,
+// and yt-dlp reads it (Download Now enabled). Before, a player playing from a blob: sent the page
+// itself, and yt-dlp, not knowing the site, answered "Unsupported URL". The window's address,
+// and what yt-dlp asked the lab for.
+async function streamLookedUp(trigger, manifest, page, cookie) {
+  const pid = appPid();
+  appWindows(pid, VIDEO_WINDOW);
+  await until("the Download video window closed", 5000, () => !appWindows(pid).includes(VIDEO_WINDOW));
+  await clearLog();
+  await trigger();
+  await until("the Download video window", 15000, () => appWindows(pid).includes(VIDEO_WINDOW)).catch(async (e) => {
+    const asked = (await (await fetch(`${LAB}/_log`)).json()).map((x) => `${x.path} ${x.status}`);
+    throw new Error(`${e.message} (the lab saw: ${asked.join(", ") || "nothing"})`);
+  });
+  const address = await until("the Download video window's address", 20000, () => videoAddress(pid)).catch((e) => {
+    // What the window showed, for the report (PrintWindow: off the screens too).
+    const shot = path.join(work, `video-window-${Date.now()}.png`);
+    spawnSync("powershell", ["-NoProfile", "-File", path.join(root, "tools", "lab", "cap-own.ps1"), "-ProcessId", String(pid), "-Title", VIDEO_WINDOW, "-Out", shot]);
+    e.message += fs.existsSync(shot) ? ` (the window: ${shot})` : " (no capture)";
+    throw e;
+  });
+  // yt-dlp's requests carry the page as referrer (the extension's own fetch of a manifest, for
+  // the media list's qualities, doesn't).
+  const asked = async () => (await (await fetch(`${LAB}/_log`)).json()).filter((e) => e.referer === page);
+  let ready = false;
+  try {
+    ready = await until("yt-dlp's lookup (Download Now enabled)", 45000, () => videoReady(pid));
+  } catch (e) {
+    const got = await asked();
+    throw new Error(`${e.message}; the window got ${address}; yt-dlp asked for ${got.map((x) => `${x.path} ${x.status}`).join(", ") || "nothing"}`);
+  } finally {
+    appWindows(pid, VIDEO_WINDOW);
+  }
+  const got = await asked();
+  // The address with its query: #171's master and variants share one path.
+  const full = (x) => `${x.path}${x.query ? `?${x.query}` : ""}`;
+  const first = got.find((x) => full(x) === manifest);
+  if (!first) throw new Error(`yt-dlp didn't ask for ${manifest}: ${got.map(full).join(", ")}`);
+  if (got.some((x) => x.path === "/page")) throw new Error("yt-dlp was given the page too");
+  if (!(first.cookie || "").includes(cookie)) throw new Error(`${manifest} without the cookie ${cookie}: ${first.cookie}`);
+  return `${address.replace(LAB, "")} read by yt-dlp${ready ? "" : "?"} (cookie, referrer)`;
+}
+const appPid = () => {
+  const [pid] = ourApps();
+  if (!pid) throw new Error("the test instance isn't running");
+  return pid;
+};
+
+// ---- the download button over videos ----------------------------------------------------------
+
+const near = (a, b, what) => {
+  if (Math.abs(a - b) > 6) throw new Error(`${what}: ${Math.round(a)} instead of ${Math.round(b)}`);
+};
+
+// An element's rectangle (the button's only while shown).
+const rect = (session, sel) =>
+  session.evaluate(`(() => { const e = document.querySelector(${JSON.stringify(sel)});
+    if (!e || (e.localName === "mdm-video-button" && e.style.display !== "block")) return null;
+    const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; })()`);
+
+// The button shown whole: there, and not faint (it goes faint as the pointer rests over the video
+// or leaves it, and goes some seconds later: video.js fadeState).
+const whole = async (session) => {
+  const b = await rect(session, "mdm-video-button");
+  if (!b) return null;
+  const p = await session.pill(PILL_STATE).catch(() => null);
+  return p && p.faint ? null : b;
+};
+
+// #480: a mouse-focused player must still fade, including after entering fullscreen. Run
+// against a local player so YouTube's network, sign-in and changing layout aren't involved.
+export async function videoFocus(session) {
+  await session.navigate(`${LAB}/page?video=${encodeURIComponent("/gen/1M/clip.mp4")}`);
+  await session.evaluate(`(() => {
+    const v = document.querySelector("#video");
+    const player = document.createElement("div");
+    player.id = "focus-player";
+    player.tabIndex = 0;
+    player.style.cssText = "width:640px;height:360px;background:#18212d";
+    v.before(player);
+    player.append(v);
+    v.controls = false;
+    v.tabIndex = -1;
+    v.style.cssText = "width:100%;height:100%;pointer-events:none";
+    const after = document.createElement("button");
+    after.id = "after-player";
+    after.textContent = "After the player";
+    player.after(after);
+  })()`);
+  const focused = (id) => session.evaluate(`document.activeElement?.id === ${JSON.stringify(id)}`);
+  const keyboard = () => session.evaluate('document.querySelector("#focus-player").matches(":focus-visible")');
+  // Whole: faint is faded (it rests faint a few seconds before it goes).
+  const shown = () => whole(session);
+  const idle = () => sleep(3100); // 1500 ms idle + the 400 ms fade to faint, with room for a slow frame.
+  const v = await rect(session, "#video");
+  await session.mouse((v.l + v.r) / 2, (v.t + v.b) / 2, "click");
+  if (!(await focused("focus-player")) || await keyboard()) throw new Error("player did not receive mouse focus");
+  await until("the video button", 5000, shown);
+  await idle();
+  if (await shown()) throw new Error("#480: mouse focus keeps the video button visible after idle");
+
+  await session.evaluate('document.querySelector("#focus-player").requestFullscreen()');
+  if (!(await session.evaluate('document.fullscreenElement?.id === "focus-player"'))) throw new Error("player did not enter fullscreen");
+  const fs = await rect(session, "#video");
+  await session.mouse((fs.l + fs.r) / 2, (fs.t + fs.b) / 2);
+  await until("the fullscreen video button", 5000, shown);
+  if (!(await session.evaluate('document.querySelector("mdm-video-button").parentNode === document.fullscreenElement'))) throw new Error("button is outside fullscreen player");
+  await idle();
+  if (await shown()) throw new Error("#480: mouse focus keeps the fullscreen video button visible after idle");
+  await session.evaluate("document.exitFullscreen()");
+
+  // Tab into the player from a preceding control, without a pointer over the video.
+  await session.evaluate(`(() => {
+    const before = document.createElement("button");
+    before.textContent = "Before the player";
+    document.querySelector("#focus-player").before(before);
+    before.focus();
+  })()`);
+  await session.mouse(1, 1);
+  await session.key("Tab");
+  if (!(await focused("focus-player")) || !(await keyboard())) throw new Error("Tab did not give the player keyboard focus");
+  await until("the keyboard video button", 5000, shown);
+  await idle();
+  if (!(await shown())) throw new Error("keyboard-focused player lost its video button");
+  await session.key("Tab");
+  if (!(await session.evaluate('document.activeElement?.localName === "mdm-video-button"'))) throw new Error("Tab skipped the video button");
+  await idle();
+  if (!(await shown())) throw new Error("keyboard-focused video button faded");
+  await session.key("Tab"); // Back through the player to the next page control.
+  if (!(await focused("after-player"))) throw new Error("Tab could not leave the video button");
+  await until("the video button hidden after focus leaves", 5000, async () => !(await shown()));
+
+  // Return to the player by mouse after using the keyboard.
+  await session.mouse((v.l + v.r) / 2, (v.t + v.b) / 2, "click");
+  if (await keyboard()) throw new Error("mouse click did not clear keyboard focus");
+  await until("the player button again", 5000, shown);
+  await idle();
+  if (await shown()) throw new Error("switching to the mouse kept the button visible");
+  // Hover shows it again; Tab from a clicked player must still reach the button.
+  await session.mouse((v.l + v.r) / 2 + 1, (v.t + v.b) / 2);
+  await until("the hovered video button", 5000, shown);
+  await session.key("Tab");
+  if (!(await session.evaluate('document.activeElement?.localName === "mdm-video-button"'))) throw new Error("Tab from a mouse-focused player skipped the video button");
+  return "mouse focus fades in normal view and fullscreen; keyboard focus stays, Tab enters and leaves, switching to the mouse fades again";
+}
+
+// Point at the video (rectangle `v`) until the button shows; its rectangle, or null.
+async function hover(session, v) {
+  for (let i = 0; i < 40; i++) {
+    await session.mouse((v.l + v.r) / 2 + (i % 2), (v.t + v.b) / 2);
+    const b = await rect(session, "mdm-video-button");
+    if (b) return b;
+    await sleep(200);
+  }
+  return null;
+}
+
+// The button's menu opened with its arrow, and its "All qualities and subtitles…" clicked, as a
+// user does, which opens the app's Download video window (#703: what the button's click did
+// before). Once the video's look-up ended (its rows came): then "All qualities…" stays where it
+// is. "menu" once the window opened.
+async function openInMdm(session, pid, b = null) {
+  // The button again first, when it faded meanwhile (1.5 s after the pointer rests): the pointer
+  // moves over its video, just under it.
+  const more = await until("the button's arrow", 8000, async () => {
+    const at = await session.pill(MORE_AT);
+    if (!at && b) await session.mouse((b.l + b.r) / 2 + (Date.now() % 2), b.b + 24);
+    return at;
+  });
+  await clickArrow(session);
+  for (let i = 0; i < 5; i += 1) {
+    // Its look-up ended (the lines below "Download best" came), or, while it still runs (a site
+    // yt-dlp takes long over), as it is: "All qualities…" stays where it is until it ends.
+    const m = await until("the menu, its look-up ended", 30000, async () => {
+      const p = await session.picks("open");
+      return p && !p.busy ? p : null;
+    }).catch(() => session.picks("open"));
+    if (!m) throw new Error("the menu didn't open");
+    await session.mouse(m.open.x, m.open.y, "click");
+    const opened = await until("the Download video window", 3000, () => appWindows(pid).includes(VIDEO_WINDOW)).catch(() => false);
+    if (opened) return "menu";
+    if (!(await session.picks())) await clickArrow(session);
+  }
+  throw new Error(`"All qualities and subtitles…" opened no window`);
+}
+
+// Where the button's main part is (its .go, read through its closed shadow root: at its left
+// end, at its right end in a right-to-left language); its left end when it can't be read.
+const GO_AT = `function () {
+  const g = this.querySelector(".go");
+  const r = g && g.getBoundingClientRect();
+  return JSON.stringify(r ? { x: r.left + Math.min(14, r.width / 2), w: r.width } : null);
+}`;
+const mainPart = async (session, b) => {
+  const go = session.pill ? await session.pill(GO_AT).catch(() => null) : null;
+  return go && go.w ? go.x : b.l + 14;
+};
+
+// The button's menu, then "All qualities and subtitles…" in it (openInMdm): the app's Download
+// video window opens; the address it shows.
+// `shot`: a picture of that window first (PrintWindow: off the screens too), for a PR's body.
+// `open`: the window is left open (closed otherwise).
+async function clickButton(session, b, shot = "", open = false) {
+  const pid = appPid();
+  appWindows(pid, VIDEO_WINDOW);
+  await until("the Download video window closed", 5000, () => !appWindows(pid).includes(VIDEO_WINDOW));
+  await openInMdm(session, pid, b);
+  await until("the Download video window", 15000, () => appWindows(pid).includes(VIDEO_WINDOW));
+  const address = await until("the Download video window's address", 10000, () => videoAddress(pid));
+  if (shot) {
+    await sleep(1500);
+    spawnSync("powershell", ["-NoProfile", "-File", path.join(root, "tools", "lab", "cap-own.ps1"), "-ProcessId", String(pid), "-Title", VIDEO_WINDOW, "-Out", shot]);
+  }
+  if (!open) appWindows(pid, VIDEO_WINDOW);
+  return address;
+}
+
+// Point at a video, see the button at its top right, click it (its qualities' menu, then "Open
+// in…": the app's video window opens), drag it to the bottom left (it stays there after a
+// reload; a drag opens neither); `never`: its menu's "Never on this site" by keyboard, then it no
+// longer shows and the app lists the site.
+async function videoButton(session, never) {
+  const page = `${LAB}/page?video=${encodeURIComponent("/gen/1M/clip.mp4")}`;
+  await session.navigate(page);
+  const v = await rect(session, "#video");
+  let b = await hover(session, v);
+  if (!b) throw new Error("no button over the video");
+  near(b.r, v.r - 8, "button's right edge");
+  near(b.t, v.t + 8, "button's top");
+  // #703: a click on its main part downloads the video's own plain file at once (no look-up, no
+  // window), then says so in green, with "Show" (MDM's window, the download selected). An earlier
+  // browser's download of it off the list first: a duplicate would be asked about.
+  const earlier = (await mdmList()).filter((d) => d.url === `${LAB}/gen/1M/clip.mp4`).map((d) => d.id);
+  if (earlier.length) await ipc({ action: "delete", ids: earlier });
+  const before = new Set((await mdmList()).map((d) => d.id));
+  await session.mouse(await mainPart(session, b), (b.t + b.b) / 2, "click");
+  const added = await until("the video's file in MDM's list", 15000, async () => (await mdmList()).find((d) => !before.has(d.id))).catch(async (e) => {
+    throw new Error(`${e.message} (the button: ${JSON.stringify(await session.pill(PILL_STATE))})`);
+  });
+  if (added.url !== `${LAB}/gen/1M/clip.mp4`) throw new Error(`MDM downloads ${added.url}`);
+  const sent = await until("the button's green state", 5000, async () => {
+    const p = await session.pill(PILL_STATE);
+    return p && p.state === "sent" ? p : null;
+  });
+  const show = sent.acts.find((a) => a.act === "show");
+  if (!show) throw new Error(`no "Show" on the button: ${JSON.stringify(sent)}`);
+  if (appWindows(appPid()).includes(VIDEO_WINDOW)) throw new Error("the click opened the Download video window");
+  await session.mouse(show.x, show.y, "click");
+  await until("MDM's main window, shown", 10000, () => appWindows(appPid()).some((x) => /^Mister Download Manager/.test(x)));
+  await session.mouse(5, 5);
+  await sleep(300);
+  b = await hover(session, v);
+  // Its menu's "All qualities and subtitles…": the app's Download video window for the file.
+  const address = await clickButton(session, b);
+  if (address !== `${LAB}/gen/1M/clip.mp4`) throw new Error(`the video window got ${address}`);
+  // Drag it to the bottom left: it snaps to that corner. (Shown again first: it fades 1.5 s after
+  // the pointer rests, #741, and the window's steps take longer.)
+  b = await hover(session, v);
+  await session.mouse(b.l + 14, (b.t + b.b) / 2, "down");
+  await session.mouse(b.l + 30, (b.t + b.b) / 2 + 20);
+  await session.mouse(v.l + 40, v.b - 30);
+  await session.mouse(v.l + 40, v.b - 30, "up");
+  await sleep(300);
+  b = await rect(session, "mdm-video-button");
+  near(b.l, v.l + 8, "dragged: left edge");
+  near(b.b, v.b - 8, "dragged: bottom");
+  if (appWindows(appPid()).includes(VIDEO_WINDOW)) throw new Error("a drag opened the video window");
+  if (await session.picks()) throw new Error("a drag opened the qualities' menu");
+  // Remembered for the site.
+  await session.mouse(5, 5);
+  await session.navigate(page);
+  b = await hover(session, v);
+  if (!b) throw new Error("no button after a reload");
+  near(b.l, v.l + 8, "after a reload: left edge");
+  near(b.b, v.b - 8, "after a reload: bottom");
+  if (!never) return "shown, clicked (its file downloaded, Show), its menu's window, dragged, kept";
+  const listed = () => {
+    try {
+      const s = JSON.parse(fs.readFileSync(path.join(data, "downloads.json"), "utf8").replace(/^\uFEFF/, "")).settings;
+      return (s.video_panel_sites || "").split(" ").includes("127.0.0.1");
+    } catch {
+      return false;
+    }
+  };
+  // Its menu by keyboard: open (its arrow), to "Never on 127.0.0.1" (the last but one), Enter.
+  const neverHere = async () => {
+    await clickArrow(session);
+    await sleep(200);
+    await session.key("End");
+    await session.key("ArrowUp");
+    await session.key("Enter");
+    // Grey "Off on this site", with "Turn on".
+    return until("the button's off state", 5000, async () => {
+      const p = await session.pill(PILL_STATE);
+      return p && p.state === "off" ? p : null;
+    });
+  };
+  let off = await neverHere();
+  await until("the site in the app's list", 15000, listed);
+  // "Turn on": the site off the app's list again.
+  const on = off.acts.find((a) => a.act === "on");
+  if (!on) throw new Error(`no "Turn on": ${JSON.stringify(off)}`);
+  await session.mouse(on.x, on.y, "click");
+  await until("the site off the app's list", 15000, () => !listed());
+  b = await hover(session, v);
+  if (!b) throw new Error("no button after Turn on");
+  off = await neverHere();
+  await until("the site in the app's list", 15000, listed);
+  // Its state shown a moment, then gone once the pointer leaves.
+  await session.mouse(5, 5);
+  await until("the button gone", 10000, async () => !(await rect(session, "mdm-video-button")));
+  await session.navigate(page);
+  if (await hover(session, v)) throw new Error("the button still shows on a site it should never show on");
+  return "shown, clicked (its file downloaded, Show), its menu's window, dragged, kept, never on the site, turned on, never again";
+}
+
+// ---- the button kept out of the way (#1735, the feedback of 2026-11-23) -----------------------
+
+// Our own sample pages, drawn into the lab's page (nothing of a real site's): a feed of posts, each
+// a small video in its card, as on a social site; and a video site's watch page, its big player
+// with the title and a column of other videos beside it. Light and dark as the browser is.
+const SAMPLE_CSS = `
+  :root { color-scheme: light dark; --bg: #eef0f3; --card: #fff; --tx: #15181d; --tx2: #5d6470; --line: #dde1e6; --top: #fff; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #17191c; --card: #23262a; --tx: #e8eaed; --tx2: #a3a9b3; --line: #33373c; --top: #1d2023; } }
+  html, body { margin: 0; background: var(--bg); color: var(--tx); font: 14px/1.4 "Segoe UI", system-ui, sans-serif; }
+  .top { height: 52px; display: flex; align-items: center; gap: 14px; padding: 0 20px; background: var(--top); border-bottom: 1px solid var(--line); }
+  .mark { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #4f7cff, #22b8a7); }
+  .find { flex: 0 1 420px; height: 32px; border-radius: 16px; background: var(--bg); border: 1px solid var(--line); }
+  .feed { width: 540px; margin: 18px auto; display: flex; flex-direction: column; gap: 14px; }
+  .post { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 0 4px; }
+  .who { display: flex; gap: 10px; align-items: center; padding: 0 14px 10px; }
+  .face { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 700; }
+  .name { font-weight: 600; } .when { color: var(--tx2); font-size: 12px; }
+  .text { padding: 0 14px 10px; }
+  .post video { display: block; width: 540px; height: 304px; background: #000; }
+  .acts { display: flex; justify-content: space-around; padding: 8px 0; color: var(--tx2); font-weight: 600; border-top: 1px solid var(--line); margin-top: 4px; }
+  .watch { display: flex; gap: 24px; padding: 20px 24px; }
+  .watch .main { width: 896px; }
+  .watch video { display: block; width: 896px; height: 504px; background: #000; border-radius: 12px; }
+  .watch h1 { font-size: 19px; margin: 12px 0 6px; }
+  .side { display: flex; flex-direction: column; gap: 10px; width: 300px; }
+  .thumb { display: flex; gap: 8px; } .thumb i { width: 150px; height: 84px; border-radius: 8px; background: var(--line); flex: none; }
+  .thumb b { display: block; font-size: 13px; } .thumb span { color: var(--tx2); font-size: 12px; }
+`;
+const samplePage = (kind, clip) => `(() => {
+  const css = ${JSON.stringify(SAMPLE_CSS)};
+  const clip = ${JSON.stringify(clip)};
+  document.head.innerHTML = '<meta charset="utf-8"><title>Sample</title>';
+  const style = document.createElement("style");
+  style.textContent = css;
+  document.head.append(style);
+  const top = '<div class="top"><i class="mark"></i><b>Sample site</b><span class="find"></span></div>';
+  if (${JSON.stringify(kind)} === "feed") {
+    const post = (face, color, name, text) =>
+      '<article class="post"><div class="who"><span class="face" style="background:' + color + '">' + face + '</span><div><div class="name">' + name + '</div><div class="when">2 h</div></div></div>' +
+      '<div class="text">' + text + '</div><video controls preload="metadata" src="' + clip + '"></video><div class="acts"><span>Like</span><span>Comment</span><span>Share</span></div></article>';
+    document.body.innerHTML = top + '<div class="feed" role="feed">' +
+      post("RA", "#5b7cfa", "River Atlas", "Morning light over the harbour, one minute of calm.") +
+      post("NW", "#1fa38a", "North Woods Club", "Trail run, the last kilometre.") + "</div>";
+  } else {
+    const thumbs = ["Mountain lake at dawn", "City at night, time-lapse", "How bread rises", "A walk by the sea"]
+      .map((t) => '<div class="thumb"><i></i><div><b>' + t + '</b><span>Sample channel</span></div></div>').join("");
+    document.body.innerHTML = top + '<div class="watch"><div class="main"><video id="player" controls preload="metadata" src="' + clip + '"></video>' +
+      '<h1>Sample clip: a calm minute</h1><div class="when">Sample channel · 1,204 views</div></div><div class="side">' + thumbs + '</div></div>';
+  }
+  return document.querySelectorAll("video").length;
+})()`;
+
+// Where an item of the button's menu is ("home": Put the button back in its corner), or null.
+const MENU_ITEM_AT = (act) => `function () {
+  const e = this.querySelector('.menu.open [data-act="${act}"]');
+  const r = e && !e.hidden && e.getBoundingClientRect();
+  return JSON.stringify(r && r.width ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null);
+}`;
+// The button's own direction (its language's): its corner is the top's end.
+const PILL_DIR = `function () { const p = this.querySelector(".pill"); return JSON.stringify(p ? p.dir : null); }`;
+
+async function calmButton(session) {
+  const shots = process.env.E2E_SHOTS && session.shot ? path.resolve(process.env.E2E_SHOTS) : "";
+  const tag = `${process.env.E2E_LANG || "en"}-${process.env.E2E_COLOR_SCHEME || "system"}`;
+  const shoot = async (name, box) => {
+    if (!shots) return;
+    await sleep(450);
+    await session.shot(path.join(shots, `${tag}-${name}.png`), { l: Math.max(0, box.l), t: Math.max(0, box.t), r: box.r, b: box.b });
+  };
+  const clip = `${LAB}/gen/1M/clip.mp4`;
+  const page = `${LAB}/page?link=none`;
+  const done = [];
+  const draw = async (kind) => {
+    await session.mouse(5, 5);
+    await session.navigate(page);
+    await session.evaluate(samplePage(kind, clip));
+    await sleep(300);
+  };
+  const form = () => session.pill(PILL_STATE);
+  // A drag of the button's main part from where it is to (x, y), as a person makes it.
+  const drag = async (b, x, y) => {
+    const from = { x: await mainPart(session, b), y: (b.t + b.b) / 2 };
+    await session.mouse(from.x, from.y, "down");
+    await session.mouse(from.x + 6, from.y + 6);
+    await session.mouse((from.x + x) / 2, (from.y + y) / 2);
+    await session.mouse(x, y);
+    await session.mouse(x, y, "up");
+    await sleep(300);
+    return rect(session, "mdm-video-button");
+  };
+  // E2E_CALM_BEFORE=1 (pictures for a pull request): the feed as it was before Automatic, with
+  // Full, the old default, chosen: the whole button over the post's video.
+  const before = process.env.E2E_CALM_BEFORE === "1";
+  if (before) {
+    await panelSettings({ video_panel_full: true });
+    await sleep(PANEL_KEPT_MS);
+  }
+  // Where an earlier case put the button on this site (the video case drags it), forgotten: the
+  // popup's own storage, as its Reset does.
+  const forget = async () => {
+    const popup = await session.tab(`${session.base}popup.html`);
+    try {
+      await until("the button's places forgotten", 10000, () =>
+        popup.evaluate("(globalThis.browser ?? chrome).storage.local.remove(['positions', 'videoFilters']).then(() => true)").catch(() => false),
+      );
+    } finally {
+      await popup.close();
+    }
+  };
+  await forget();
+  // The video case's "Never on the site" (in the last browser) leaves the lab's site listed.
+  const listed = () => {
+    try {
+      const saved = JSON.parse(fs.readFileSync(path.join(data, "downloads.json"), "utf8").replace(/^﻿/, "")).settings;
+      return (saved.video_panel_sites || "").split(" ").includes("127.0.0.1");
+    } catch {
+      return false;
+    }
+  };
+  if (listed()) {
+    await panelSettings({ video_panel_sites: "" });
+    await sleep(PANEL_KEPT_MS);
+  }
+  try {
+    // 1. A feed: a post's video gets the round button (Automatic, the default).
+    await draw("feed");
+    const post = await session.evaluate('JSON.stringify(document.querySelector(".post").getBoundingClientRect())').then(JSON.parse);
+    const fv = await rect(session, ".post video");
+    let b = await hover(session, fv);
+    if (!b) throw new Error("no button over the feed's video");
+    if (before) {
+      await until("the whole button in the feed (Full)", 15000, async () => {
+        await session.mouse((fv.l + fv.r) / 2 + (Date.now() % 2), (fv.t + fv.b) / 2);
+        const p = await form();
+        return p && !p.compact ? p : null;
+      });
+      await shoot("feed-before", { l: post.left - 16, t: post.top - 16, r: post.right + 16, b: post.bottom + 16 });
+      return "the feed with Full (as before): the whole button";
+    }
+    const inFeed = await until("the round button in the feed", 5000, async () => {
+      const p = await form();
+      return p && p.compact ? p : null;
+    }).catch(async (e) => {
+      throw new Error(`${e.message} (the button: ${JSON.stringify(await form())})`);
+    });
+    const rtl = (await session.pill(PILL_DIR)) === "rtl";
+    // Its corner: the top's end (the top left, right to left).
+    if (rtl) near(b.l, fv.l + 8, "feed: the button's left edge (right to left)");
+    else near(b.r, fv.r - 8, "feed: the button's right edge");
+    await shoot("feed", { l: post.left - 16, t: post.top - 16, r: post.right + 16, b: post.bottom + 16 });
+    done.push(`feed: round (${Math.round(b.r - b.l)} px)`);
+
+    // 2. A big player: the whole button, its words.
+    await draw("watch");
+    const v = await rect(session, "#player");
+    b = await hover(session, v);
+    if (!b) throw new Error("no button over the big player");
+    const big = await until("the whole button over the big player", 5000, async () => {
+      await session.mouse((v.l + v.r) / 2 + (Date.now() % 2), (v.t + v.b) / 2);
+      const p = await form();
+      return p && !p.compact ? p : null;
+    });
+    b = await rect(session, "mdm-video-button");
+    await shoot("player", { l: v.l - 16, t: v.t - 16, r: v.r + 16, b: Math.min(v.b, v.t + 200) });
+    done.push(`big player: whole ("${big.text}", ${Math.round(b.r - b.l)} px)`);
+
+    // 3. Faint as the pointer rests, then gone; whole again as it moves.
+    await session.mouse((v.l + v.r) / 2 + 3, (v.t + v.b) / 2 + 3);
+    await until("the whole button", 3000, () => whole(session));
+    const rested = Date.now();
+    const faint = await until("the faint button, the pointer resting", 4000, async () => {
+      const p = await form();
+      return p && p.faint && (await rect(session, "mdm-video-button")) ? p : null;
+    });
+    const faintMs = Date.now() - rested;
+    await shoot("faint", { l: v.l - 16, t: v.t - 16, r: v.r + 16, b: Math.min(v.b, v.t + 200) });
+    await until("the button gone, the pointer still resting", 6000, async () => !(await rect(session, "mdm-video-button")));
+    const goneMs = Date.now() - rested;
+    if (faintMs < 1200) throw new Error(`faint ${faintMs} ms after the pointer rested, not about 1.5 s`);
+    if (goneMs < 4000) throw new Error(`gone ${goneMs} ms after the pointer rested, not about 4.5 s`);
+    await session.mouse((v.l + v.r) / 2, (v.t + v.b) / 2 + 9);
+    await until("the whole button again, the pointer moving", 3000, () => whole(session));
+    done.push(`faint ${faintMs} ms after the pointer rested (${faint.state}), gone ${goneMs} ms, whole again as it moved`);
+
+    // 4. Dragged outside the player, above its corner: it snaps there, and stays whole while the
+    // pointer goes to it across the gap.
+    b = await hover(session, v);
+    const corner = rtl ? v.l + 20 : v.r - 20;
+    b = await drag(b, corner, v.t - 30);
+    if (!b) throw new Error("the button went with the drag");
+    near(b.b, v.t - 6, "outside: its bottom, 6 px above the player");
+    if (rtl) near(b.l, v.l, "outside: at the player's left end");
+    else near(b.r, v.r, "outside: at the player's right end");
+    if (await session.picks()) throw new Error("a drag opened the qualities' menu");
+    await session.mouse((v.l + v.r) / 2, (v.t + v.b) / 2);
+    await sleep(200);
+    await session.mouse((b.l + b.r) / 2, v.t + 2);
+    await session.mouse((b.l + b.r) / 2, (b.t + b.b) / 2);
+    await sleep(700);
+    if (!(await whole(session))) throw new Error("the button outside the player faded as the pointer went to it");
+    await shoot("outside", { l: v.l - 16, t: Math.max(0, b.t - 40), r: v.r + 16, b: Math.min(v.b, v.t + 200) });
+    done.push(`dragged outside: above the player's ${rtl ? "left" : "right"} end, whole as the pointer reached it`);
+    // Kept for the site.
+    await draw("watch");
+    b = await hover(session, v);
+    if (!b) throw new Error("no button after a reload");
+    near(b.b, v.t - 6, "after a reload: outside, above the player");
+    done.push("kept after a reload");
+
+    // 5. Its menu's "Put the button back in its corner".
+    await clickArrow(session);
+    const home = await until("Put the button back in its corner, in its menu", 5000, () => session.pill(MENU_ITEM_AT("home")));
+    await session.mouse(home.x, home.y, "click");
+    await sleep(300);
+    b = await hover(session, v);
+    near(b.t, v.t + 8, "back in its corner: its top");
+    if (rtl) near(b.l, v.l + 8, "back in its corner: its left edge");
+    else near(b.r, v.r - 8, "back in its corner: its right edge");
+    done.push("back in its corner from its menu");
+
+    // 5b. #1923: dropped in the middle of the player, it stays there (a free spot, no edge it
+    // snaps to), and there after a reload; its menu puts it back in its corner again.
+    {
+      const mx = (v.l + v.r) / 2, my = (v.t + v.b) / 2;
+      b = await drag(b, mx + (b.r - b.l) / 2 - 10, my);
+      if (!b) throw new Error("the button went with the drag to the middle");
+      const cx = (b.l + b.r) / 2, cy = (b.t + b.b) / 2;
+      if (Math.abs(cy - my) > 40 || b.t < v.t + 30 || b.b > v.b - 30 || b.l < v.l + 30 || b.r > v.r - 30) throw new Error(`dropped in the middle, it went to ${JSON.stringify(b)} (player ${JSON.stringify(v)})`);
+      await shoot("middle", { l: v.l - 16, t: v.t - 16, r: v.r + 16, b: v.b + 16 });
+      await draw("watch");
+      const kept = await hover(session, v);
+      if (!kept || Math.abs((kept.t + kept.b) / 2 - cy) > 6 || Math.abs((kept.l + kept.r) / 2 - cx) > 6) throw new Error(`after a reload the middle spot wasn't kept: ${JSON.stringify(kept)}`);
+      done.push(`dropped in the middle of the player: stays there (${Math.round(cx - v.l)}, ${Math.round(cy - v.t)} px in), and after a reload`);
+      await clickArrow(session);
+      const home2 = await until("Put the button back in its corner, in its menu", 5000, () => session.pill(MENU_ITEM_AT("home")));
+      await session.mouse(home2.x, home2.y, "click");
+      await sleep(300);
+      b = await hover(session, v);
+      near(b.t, v.t + 8, "back in its corner again: its top");
+    }
+    // 5c. #1923: the menu's "Hide the download button in full screen", the popup's same setting.
+    {
+      const stored = async () => {
+        const popup = await session.tab(`${session.base}popup.html`);
+        try {
+          return await until("the add-on's storage", 10000, () => popup.evaluate("(globalThis.browser ?? chrome).storage.local.get({ hideVideoFullscreen: null }).then((v) => String(v.hideVideoFullscreen))").catch(() => false));
+        } finally {
+          await popup.close();
+        }
+      };
+      const was = await stored();
+      await hover(session, v);
+      await clickArrow(session);
+      const fs1 = await until("Hide the download button in full screen, in its menu", 5000, () => session.pill(MENU_ITEM_AT("fullscreen")));
+      await session.mouse(fs1.x, fs1.y, "click");
+      await sleep(400);
+      const on = await stored();
+      await session.mouse(fs1.x, fs1.y, "click");
+      await sleep(400);
+      const off = await stored();
+      await session.mouse(5, 5);
+      if (on !== "true" || off !== "false") throw new Error(`the menu's full-screen item: ${was} -> ${on} -> ${off}`);
+      done.push(`the menu's "Hide the download button in full screen": ${was} -> ${on} -> ${off} (the popup's setting)`);
+      b = await hover(session, v);
+    }
+
+    // 6. Outside again, then the popup's Reset: back in its corner in the open tab, no reload.
+    b = await drag(b, corner, v.t - 30);
+    near(b.b, v.t - 6, "outside again");
+    await session.mouse(5, 5);
+    const popup = await session.tab(`${session.base}popup.html`);
+    try {
+      await until("the popup's Reset", 10000, () => popup.evaluate('Boolean(document.querySelector("#video-reset"))').catch(() => false));
+      if (shots && popup.shot) {
+        await popup.evaluate('(() => { const t = document.querySelector("#tab-settings"); if (t) t.click(); return 0; })()');
+        await sleep(300);
+        await popup.shot(path.join(shots, `${tag}-popup-reset.png`));
+      }
+      await popup.evaluate('(() => { document.querySelector("#video-reset").click(); return 0; })()');
+      await until("the button's places forgotten", 10000, () =>
+        popup.evaluate("(globalThis.browser ?? chrome).storage.local.get({ positions: null, videoFilters: null }).then((v) => v.positions === null && v.videoFilters === null)"),
+      );
+    } finally {
+      await popup.close();
+    }
+    b = await hover(session, v);
+    near(b.t, v.t + 8, "after Reset: its top, in its corner");
+    done.push("the popup's Reset: back in its corner in the open tab");
+    return done.join("; ");
+  } finally {
+    await session.mouse(5, 5);
+    if (before) await panelSettings({ video_panel_full: false });
+  }
+}
+
+// ---- #689: a video in a feed sends its post ----------------------------------------------------
+
+// The sample feeds (our own pages, reduced to what names a post on each site), served at their
+// sites' own addresses by the browser's protocol (nothing reaches those sites).
+const FEEDS = path.join(root, "tools", "extension", "feeds");
+// What the button says when nothing names the video, in the browser's language (English, or
+// Chromium's --lang in E2E_CHROMIUM_ARGS).
+const OPEN_POST = (t) => {
+  const lang = (t.kind === "chromium" && /--lang=([\w-]+)/.exec(process.env.E2E_CHROMIUM_ARGS || "")) || [];
+  const file = (l) => path.join(root, "extension", "_locales", l, "messages.json");
+  const at = lang[1] && fs.existsSync(file(lang[1].replace("-", "_"))) ? file(lang[1].replace("-", "_")) : file("en");
+  return JSON.parse(fs.readFileSync(at, "utf8")).video_open_post.message;
+};
+// The page's videos in the sample pages' order (test.mjs's): into open shadow roots too.
+const VIDEOS = `(() => { const all = []; const walk = (n) => { for (const c of n.children) { if (c.localName === "video") all.push(c);
+  if (c.shadowRoot) walk(c.shadowRoot); walk(c); } }; walk(document); return all; })()`;
+// What the button says now (its label, and whether that is an error), in its closed shadow root.
+const PILL_LABEL = `function () {
+  const p = this.querySelector(".pill");
+  const l = this.querySelector(".label");
+  return JSON.stringify({ text: l ? l.textContent : "", err: Boolean(p && ["warn", "err", "off"].includes(p.dataset.state)) });
+}`;
+
+// Point at the video (rectangle `v`) until the button shows over it (not over the last one); its
+// rectangle, or null.
+async function buttonOver(session, v) {
+  for (let i = 0; i < 40; i++) {
+    await session.mouse((v.l + v.r) / 2 + (i % 2), (v.t + v.b) / 2);
+    const b = await rect(session, "mdm-video-button");
+    if (b && b.t >= v.t - 1 && b.b <= v.b + 1 && b.l >= v.l - 1 && b.r <= v.r + 1) {
+      // Settled there (it fades in and follows the video).
+      await sleep(400);
+      const again = await rect(session, "mdm-video-button");
+      if (again && Math.abs(again.l - b.l) < 2 && Math.abs(again.t - b.t) < 2) return again;
+    }
+    await sleep(200);
+  }
+  return null;
+}
+
+// Each video of each sample page hovered and its button clicked: the app's Download video window
+// opens on what the page names for it (its post, or the page when it is the video's own), or on
+// its own plain file when nothing names it; with neither, no window, and the button says to open
+// the post. Never the feed.
+async function feedVideos(t) {
+  const s = t.session;
+  // E2E_FEEDS: only these sample pages (comma separated names, "linkedin,x").
+  const only = (process.env.E2E_FEEDS || "").split(",").filter(Boolean);
+  const pages = fs
+    .readdirSync(FEEDS)
+    .filter((f) => f.endsWith(".html") && (!only.length || only.includes(f.replace(/\.html$/, ""))))
+    .map((f) => {
+      const html = fs.readFileSync(path.join(FEEDS, f), "utf8");
+      return { f, html, page: /<meta name="mdm-page" content="([^"]+)"/.exec(html)[1].replaceAll("&amp;", "&") };
+    });
+  const css = fs.readFileSync(path.join(FEEDS, "feeds.css"), "utf8");
+  // media.example.test: a video's own plain file (social.html), never fetched from a network
+  // either (another download manager there would take it).
+  await s.serve([...new Set(pages.map((p) => new URL(p.page).hostname)), "media.example.test"], (url) => {
+    const u = new URL(url);
+    if (u.pathname.endsWith("/feeds.css")) return { status: 200, type: "text/css", body: css };
+    if (u.hostname === "media.example.test") return { status: 200, type: "video/mp4", body: "" };
+    const p = pages.find((x) => new URL(x.page).host === u.host && new URL(x.page).pathname === u.pathname);
+    return p ? { status: 200, type: "text/html; charset=utf-8", body: p.html } : { status: 404, type: "text/plain", body: "not a sample page" };
+  });
+  const pid = appPid();
+  const openPost = OPEN_POST(t);
+  const done = [];
+  let again = 0;
+  // E2E_FEEDS_SHOT: a folder for a PR's pictures, from the LinkedIn sample: the app's window for
+  // its first video, the button's answer for one nothing names.
+  const shots = process.env.E2E_FEEDS_SHOT || "";
+  const shot = (f, i, what) => (shots && f === "linkedin.html" && (what === "told" || i === 0) ? path.join(shots, `${t.name}-${what}.png`) : "");
+  if (shots) fs.mkdirSync(shots, { recursive: true });
+  for (const { f, page } of pages) {
+    await s.navigate(page);
+    const count = await s.evaluate(`${VIDEOS}.length`);
+    if (!count) throw new Error(`${f}: no video on the page (served?)`);
+    let posts = 0;
+    let files = 0;
+    let told = 0;
+    for (let i = 0; i < count; i++) {
+      const want = await s.evaluate(`(() => { const v = ${VIDEOS}[${i}]; v.scrollIntoView({ block: "center" });
+        const e = v.getAttribute("data-expect");
+        return e === "page" ? location.href : e === "none" ? (/^https?:/.test(v.currentSrc) ? v.currentSrc : null) : e.replaceAll("{origin}", location.origin); })()`);
+      await sleep(150);
+      const v = await s.evaluate(`(() => { const r = ${VIDEOS}[${i}].getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; })()`);
+      let b = await buttonOver(s, v);
+      if (!b) throw new Error(`${f}: no button over video ${i + 1}`);
+      if (want) {
+        // What the button says meanwhile, for the report when no window opens.
+        // A click the button never took (it said nothing: headless Firefox now and then drops
+        // one) is made once more, and counted; one it answered without a window fails.
+        let got = "";
+        for (let attempt = 0; !got; attempt++) {
+          const said = new Set();
+          const end = Date.now() + 5000;
+          const watching = (async () => {
+            while (Date.now() < end) {
+              const l = await s.pill(PILL_LABEL).catch(() => null);
+              if (l) said.add(l.text);
+              await sleep(100);
+            }
+          })();
+          got = await clickButton(s, b, shot(f, i, "window")).catch(async (e) => {
+            await watching;
+            if (attempt === 0 && said.size <= 1) return "";
+            throw new Error(`${f}: video ${i + 1} (${want}): ${e.message} (the button said: ${[...said].join(" | ")})`);
+          });
+          if (!got) {
+            again += 1;
+            await s.mouse(2, 2);
+            b = await buttonOver(s, v);
+            if (!b) throw new Error(`${f}: no button over video ${i + 1} again`);
+          }
+        }
+        if (got !== want) throw new Error(`${f}: video ${i + 1} sent ${got}, not ${want}`);
+        /^http:\/\/media\.example\.test\//.test(got) ? (files += 1) : (posts += 1);
+      } else {
+        appWindows(pid, VIDEO_WINDOW);
+        await s.mouse(await mainPart(s, b), (b.t + b.b) / 2, "click");
+        const said = await until(`${f}: video ${i + 1}'s answer on the button`, 10000, async () => {
+          const l = await s.pill(PILL_LABEL);
+          return l && l.err ? l.text : "";
+        });
+        if (shot(f, i, "told") && s.screenshot) await s.screenshot(shot(f, i, "told"));
+        if (said !== openPost) throw new Error(`${f}: video ${i + 1} said "${said}"`);
+        await sleep(1000);
+        if (appWindows(pid).includes(VIDEO_WINDOW)) throw new Error(`${f}: video ${i + 1} opened the video window`);
+        told += 1;
+        // Its answer shown to the end (video.js flash), as a person would see it.
+        await sleep(1500);
+      }
+      await s.mouse(2, 2);
+    }
+    done.push(`${f.replace(/\.html$/, "")} ${[posts && `${posts} named`, files && `${files} file`, told && `${told} told`].filter(Boolean).join("/")}`);
+  }
+  return `each video's own address, its file, or "${openPost}": ${done.join(", ")}${again ? ` (${again} click(s) the button never took, made again)` : ""}`;
+}
+
+// How long the page and the extension keep the app's "may it show here" (video.js ASK_MS,
+// background.js PANEL_KEEP_MS), with room for the question.
+const PANEL_KEPT_MS = 5000 + 1500;
+
+// Options → General → Download panels, changed as its OK does: the settings saved in
+// downloads.json, which the host reads at each question. Changed with the app stopped, so its own
+// next save doesn't put them back.
+// The extension holding Options' excluded sites with localhost in them or not (it asks them
+// again as its popup opens; else only a minute after it last did, at a download): Chromium's rule
+// for the files the browser would open follows them.
+async function localhostListed(t, listed) {
+  const popup = await t.session.tab(`${t.session.base}popup.html`);
+  try {
+    await until(`the extension's excluded sites ${listed ? "with" : "without"} localhost`, 10000, () =>
+      popup
+        .evaluate(`(globalThis.browser ?? chrome).storage.local.get({ rules: null }).then((v) => Boolean(v.rules) && (v.rules.excludedSites || "").split(/\\s+/).includes("localhost") === ${listed})`)
+        .catch(() => false),
+    );
+    await sleep(300);
+  } finally {
+    await popup.close();
+  }
+}
+
+async function panelSettings(change) {
+  await stopApp();
+  const file = path.join(data, "downloads.json");
+  const saved = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, ""));
+  Object.assign(saved.settings, change);
+  fs.writeFileSync(file, JSON.stringify(saved));
+  await startApp();
+}
+
+// Whether the button's pill is its round form (`compact`: the logo, the arrow, the ✕), and its width.
+const PILL_COMPACT = `function () {
+  const p = this.querySelector ? this.querySelector(".pill") : null;
+  return p ? JSON.stringify({ compact: p.classList.contains("compact"), w: p.getBoundingClientRect().width }) : null;
+}`;
+
+// #532: the button follows Options in a tab already open (no reload: YouTube never reloads),
+// switched off, on again, and off on the site; and after a reload. #1278: Button size Compact
+// makes it the round button over a large video in the open tab, Automatic puts its words back;
+// Automatic is round over a smaller player, where Full keeps its words.
+// E2E_SHOTS (Chromium): <lang>-<scheme>-button-full.png and -button-compact.png, the video with it.
+async function videoButtonFollowsOptions(session) {
+  const page = `${LAB}/page?video=${encodeURIComponent("/gen/1M/clip.mp4")}`;
+  await session.navigate(page);
+  const v = await rect(session, "#video");
+  const away = async () => {
+    await session.mouse(5, 5);
+    await sleep(PANEL_KEPT_MS);
+  };
+  const done = [];
+  try {
+    if (!(await hover(session, v))) throw new Error("no button over the video");
+    await panelSettings({ video_panel: false });
+    await away();
+    if (await hover(session, v)) throw new Error("switched off in Options: the button still shows in the open tab");
+    done.push("off: gone in the open tab");
+    await session.mouse(5, 5);
+    await session.navigate(page);
+    if (await hover(session, v)) throw new Error("switched off in Options: the button shows after a reload");
+    done.push("and after a reload");
+    await panelSettings({ video_panel: true });
+    await away();
+    if (!(await hover(session, v))) throw new Error("switched on again: no button in the open tab");
+    done.push("on again: back in the open tab");
+    // #1278: Button size. Full: its words over this 640 px video; Compact: the round button.
+    const shots = process.env.E2E_SHOTS && session.shot ? path.resolve(process.env.E2E_SHOTS) : "";
+    const tag = `${process.env.E2E_LANG || "en"}-${process.env.E2E_COLOR_SCHEME || "system"}`;
+    const size = async (want) => {
+      // Over the video until the button's form is the one wanted (the page asks the app again
+      // when its answer is older than 5 s).
+      return until(`the button ${want ? "compact" : "full"}`, 15000, async () => {
+        await hover(session, v);
+        const p = await session.pill(PILL_COMPACT);
+        return p && p.compact === want ? p : null;
+      });
+    };
+    const shoot = async (name) => {
+      if (!shots) return;
+      await sleep(400);
+      await session.shot(path.join(shots, `${tag}-button-${name}.png`), { l: v.l - 16, t: v.t - 16, r: v.r + 16, b: Math.min(v.b, v.t + 140) + 16 });
+    };
+    const full = await size(false);
+    await shoot("full");
+    // #1923: its scale beside Button size, 120% then 80%, in the open tab without a reload.
+    const scaled = async (scale, wider) =>
+      until(`the button at ${scale}%`, 15000, async () => {
+        await hover(session, v);
+        const p = await session.pill(PILL_COMPACT);
+        return p && !p.compact && (wider ? p.w > full.w * 1.1 : p.w < full.w * 0.9) ? p : null;
+      });
+    await panelSettings({ video_panel_scale: 120 });
+    await away();
+    const big = await scaled(120, true);
+    await shoot("scale-120");
+    await panelSettings({ video_panel_scale: 80 });
+    await away();
+    const little = await scaled(80, false);
+    await shoot("scale-80");
+    await panelSettings({ video_panel_scale: 100 });
+    await away();
+    await size(false);
+    done.push(`scale: ${Math.round(big.w)} px at 120%, ${Math.round(little.w)} px at 80%, ${Math.round(full.w)} px at 100%, in the open tab`);
+    await panelSettings({ video_panel_compact: true });
+    await away();
+    const small = await size(true);
+    if (!(small.w < full.w)) throw new Error(`Compact: the round button (${small.w} px) is no smaller than the full one (${full.w} px)`);
+    await shoot("compact");
+    done.push(`Compact: the round button in the open tab (${Math.round(small.w)} px, Full ${Math.round(full.w)} px)`);
+    await session.mouse(5, 5);
+    await session.navigate(page);
+    await size(true);
+    done.push("and after a reload");
+    await panelSettings({ video_panel_compact: false });
+    await away();
+    await size(false);
+    done.push("Automatic again: its words back in the open tab over the 640 px video");
+    // Automatic (the default) over a smaller player: the round button; Full chosen: its words
+    // there too (the feedback of 2026-11-23).
+    await session.evaluate('(() => { const e = document.querySelector("#video"); e.style.width = "560px"; e.style.height = "315px"; return 0; })()');
+    await size(true);
+    done.push("Automatic over a 560 px player: round");
+    await panelSettings({ video_panel_full: true });
+    await away();
+    await size(false);
+    done.push("Full chosen: its words there too");
+    await panelSettings({ video_panel_full: false });
+    await away();
+    await session.evaluate('(() => { const e = document.querySelector("#video"); e.style.width = ""; e.style.height = ""; return 0; })()');
+    await panelSettings({ video_panel_sites: "127.0.0.1" });
+    await away();
+    if (await hover(session, v)) throw new Error("the site listed in Options: the button still shows in the open tab");
+    done.push("the site listed: gone in the open tab");
+  } finally {
+    await session.mouse(5, 5);
+    await panelSettings({ video_panel: true, video_panel_sites: "", video_panel_compact: false, video_panel_full: false, video_panel_scale: 100 });
+  }
+  return done.join("; ");
+}
+
+// ---- the cases ---------------------------------------------------------------------------------
+
+class Skip extends Error {}
+
+// A port free now: bound as port 0 on 127.0.0.1, read back and let go, for a program that can't
+// say which one it got (the headless MDM's --port takes no 0). Another program could take it in
+// between, unlike the ports the servers below bind themselves; a run then fails, never another's.
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.once("error", reject);
+    s.listen(0, "127.0.0.1", () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+// A promise that fails after `ms` with "timed out: <what>", unless `p` settles first.
+function within(what, ms, p) {
+  let timer;
+  return Promise.race([p, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`timed out: ${what}`)), ms)))]).finally(() => clearTimeout(timer));
+}
+
+// The lab server on 127.0.0.1, at E2E_PORT or on a free port it binds itself (port 0): `port`
+// resolves with the one it says it listens on.
+function startLab() {
+  const server = spawn(exe("labserver"), ["--bind", `127.0.0.1:${BASE_PORT}`], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+  let said = "";
+  const port = new Promise((resolve, reject) => {
+    server.stderr.on("data", (d) => {
+      if (said === null) return;
+      said = (said + d).slice(-4000);
+      const m = /labserver listening on https?:\/\/[^\s/]+:(\d+)/.exec(said);
+      if (m) {
+        said = null;
+        resolve(Number(m[1]));
+      }
+    });
+    server.on("error", reject);
+    server.on("exit", (code) => reject(new Error(`the lab server stopped (${code}): ${(said || "").trim()}`)));
+  });
+  return { server, port: within("the lab server's port", 15000, port) };
+}
+
+// A forward proxy on 127.0.0.1 (#42): plain requests in absolute form and CONNECT tunnels, the
+// name lab.mdm.test sent to the lab server, every request logged ({method, target}). On E2E_PORT's
+// +1, else on a free port (0, read back into PROXY_PORT once it listens: `started`).
+function startProxy() {
+  const to = (host, port) => (host === PROXY_HOST ? ["127.0.0.1", PORT] : [host, Number(port) || 80]);
+  const server = http.createServer((req, res) => {
+    // Its PAC script, as a VPN extension may set one by its address (Chromium's pac_script.url).
+    if (req.url === "/mdm.pac") {
+      res.writeHead(200, { "content-type": "application/x-ns-proxy-autoconfig" }).end(pac());
+      return;
+    }
+    proxyLog.push({ method: req.method, target: req.url });
+    let u;
+    try {
+      u = new URL(req.url);
+    } catch {
+      res.writeHead(400).end();
+      return;
+    }
+    const [host, port] = to(u.hostname, u.port);
+    const up = http.request({ host, port, method: req.method, path: u.pathname + u.search, headers: req.headers }, (r) => {
+      res.writeHead(r.statusCode || 502, r.headers);
+      r.pipe(res);
+    });
+    up.on("error", () => (res.headersSent ? res.destroy() : res.writeHead(502).end()));
+    req.pipe(up);
+  });
+  server.on("connect", (req, client, head) => {
+    proxyLog.push({ method: "CONNECT", target: req.url });
+    const [h, p] = req.url.split(":");
+    const [host, port] = to(h, p);
+    const up = net.connect(port, host, () => {
+      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      up.write(head);
+      up.pipe(client);
+      client.pipe(up);
+    });
+    up.on("error", () => client.destroy());
+    client.on("error", () => up.destroy());
+  });
+  server.started = new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(PROXY_PORT, "127.0.0.1", () => {
+      PROXY_PORT = server.address().port;
+      resolve();
+    });
+  });
+  // A failed start is the run's error (the promise above), not an uncaught one.
+  server.started.catch(() => {});
+  return server;
+}
+
+// A link on a page, clicked as a user does.
+async function clickLink(t, link) {
+  await t.session.navigate(`${LAB}/page?link=${encodeURIComponent(link)}`);
+  await t.session.evaluate("document.getElementById('link').click()");
+}
+
+// The requests MDM made for `p`: all but the browser's own first one.
+async function mdmRequests(p) {
+  const all = await requests(p);
+  if (all.length < 2) throw new Error(`${p}: only the browser's request reached the server (${all.map(brief).join("; ")})`);
+  return all.slice(1);
+}
+
+// One file through the lab's host (lab.mdm.test, known to the test proxy only): how many of its
+// requests went through the proxy (the browser's own first; MDM's when it got the proxy).
+async function throughProxy(t, label, wantMdm) {
+  proxyLog.length = 0;
+  const file = `e2e-proxy-${t.name}-${label}.xz`;
+  await clickLink(t, `http://${PROXY_HOST}:${PORT}/gen/1M/${file}`);
+  if (wantMdm) await arrived(file, 1 << 20, "");
+  else await sleep(8000);
+  await keptNothing(t.dl);
+  return proxyLog.filter((e) => e.target.includes(file)).length;
+}
+
+// With the switch on and a proxy set: an ordinary .zip link on the lab's own address (127.0.0.1,
+// which the browser itself never sends to a proxy) still reaches MDM. How many of its requests
+// went through the proxy.
+async function plainWhileProxied(t) {
+  proxyLog.length = 0;
+  const file = `e2e-proxyon-${t.name}.zip`;
+  await clickLink(t, `/gen/1M/${file}`);
+  await arrived(file, 1 << 20);
+  await keptNothing(t.dl);
+  return proxyLog.filter((e) => e.target.includes(file)).length;
+}
+
+// A stand-in VPN extension: it has the "proxy" permission and sets the browser's proxy
+// (chrome.proxy.settings.set, from its page), as real VPN and proxy extensions do.
+function vpnExtension() {
+  const dir = path.join(work, "vpn-extension");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "manifest.json"),
+    JSON.stringify({ manifest_version: 3, name: "MDM e2e stand-in VPN", version: "1.0", permissions: ["proxy"] }),
+  );
+  // Its page, driven over DevTools by e2e.mjs.
+  fs.writeFileSync(path.join(dir, "page.html"), "<!doctype html><title>stand-in VPN</title>");
+  return dir;
+}
+
+// #578's stand-in for an extension that saves files in folders of its own (Save In): it starts
+// a download with `downloads.download` and a `filename` in a folder. Its page, driven over DevTools.
+function folderExtension() {
+  const dir = path.join(work, "folder-extension");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "manifest.json"),
+    JSON.stringify({ manifest_version: 3, name: "MDM e2e stand-in Save In", version: "1.0", permissions: ["downloads"], host_permissions: ["<all_urls>"] }),
+  );
+  fs.writeFileSync(path.join(dir, "page.html"), "<!doctype html><title>stand-in Save In</title>");
+  return dir;
+}
+
+// Firefox's stand-in VPN add-on: it sends the lab's host (lab.mdm.test) through the test proxy
+// per request (proxy.onRequest), leaving the browser's proxy settings alone.
+function firefoxVpnExtension() {
+  const dir = path.join(work, "vpn-addon");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "manifest.json"),
+    JSON.stringify({
+      manifest_version: 2,
+      name: "MDM e2e stand-in VPN",
+      version: "1.0",
+      permissions: ["proxy", "<all_urls>"],
+      background: { scripts: ["background.js"] },
+      browser_specific_settings: { gecko: { id: "vpn-e2e@misterdownloadmanager.com" } },
+    }),
+  );
+  fs.writeFileSync(
+    path.join(dir, "background.js"),
+    `browser.proxy.onRequest.addListener((d) => (new URL(d.url).hostname === ${JSON.stringify(PROXY_HOST)} ? { type: "http", host: "127.0.0.1", port: ${PROXY_PORT} } : { type: "direct" }), { urls: ["<all_urls>"] });`,
+  );
+  return dir;
+}
+
+// #42 in Chrome and the other Chromium browsers: "proxy" is required there (Chrome can't make it
+// optional), and the popup's switch is the extension's own setting, off as installed. A stand-in
+// VPN extension sets the browser's proxy: a fixed server, then a PAC script (inline, then by its
+// address). Off, MDM gets nothing of it (only the browser's request goes through the proxy); on,
+// MDM downloads through the same proxy. Also: what Chrome warns about on install and update is
+// the same with and without "proxy" (Chrome counts it as access to every site, which the
+// extension already has), so the update doesn't switch the extension off to ask.
+async function proxyInChromium(t) {
+  const s = t.session;
+  const done = [];
+  const ext = JSON.parse(
+    await s.inExtension(`(async () => {
+      const m = chrome.runtime.getManifest();
+      // As a manifest on its own: its name in plain text, no locale folder to read.
+      const plain = (perms, hosts = m.host_permissions) => JSON.stringify({ manifest_version: 3, name: "MDM", version: m.version, permissions: perms, host_permissions: hosts });
+      const warn = (...a) => new Promise((r) => chrome.management.getPermissionWarningsByManifest(plain(...a), r));
+      const without = m.permissions.filter((p) => p !== "proxy");
+      return JSON.stringify({ api: typeof chrome.proxy, perms: m.permissions, optional: m.optional_permissions || [], with: await warn(m.permissions), without: await warn(without), alone: await warn(["proxy"], []) });
+    })()`),
+  );
+  if (ext.api !== "object" || !ext.perms.includes("proxy") || ext.optional.includes("proxy")) throw new Error(`Chrome's proxy permission: ${JSON.stringify(ext)}`);
+  if (JSON.stringify(ext.with) !== JSON.stringify(ext.without)) throw new Error(`"proxy" adds a warning: ${JSON.stringify(ext.with)} vs ${JSON.stringify(ext.without)}`);
+  // The same check is no proof if Chrome said nothing for "proxy" at all: on its own, it warns.
+  if (!ext.alone.length || !ext.with.includes(ext.alone[0])) throw new Error(`"proxy" alone: ${JSON.stringify(ext.alone)}`);
+  done.push(`"proxy" required; Chrome's warnings with it ${JSON.stringify(ext.with)}, the same as without it ("proxy" alone: ${JSON.stringify(ext.alone)})`);
+
+  const vpnPage = await s.loadExtension(vpnExtension(), "page.html");
+  const vpn = vpnPage.evaluate;
+  const setProxy = async (value) => {
+    await vpn(`chrome.proxy.settings.set({ value: ${JSON.stringify(value)}, scope: "regular" }).then(() => "set")`);
+    await sleep(500);
+    // What our extension then reads: the other extension's.
+    const seen = JSON.parse(await s.inExtension(`chrome.proxy.settings.get({}).then((d) => JSON.stringify(d))`));
+    if (seen.levelOfControl !== "controlled_by_other_extensions" || seen.value.mode !== value.mode) throw new Error(`the browser's proxy as read: ${JSON.stringify(seen)}`);
+    return seen;
+  };
+  const fixed = { mode: "fixed_servers", rules: { singleProxy: { scheme: "http", host: "127.0.0.1", port: PROXY_PORT } } };
+  // Its switches are on the Settings tab (#1496).
+  const popup = await s.tab(`${s.base}popup.html?tab=settings`);
+  try {
+    await setProxy(fixed);
+    await until("the popup", 10000, () =>
+      popup.evaluate(`location.href.startsWith(${JSON.stringify(s.base)}) && document.readyState === "complete" && Boolean(document.getElementById("proxy-row"))`).catch(() => false),
+    );
+    await sleep(300);
+    // As installed: the switch shown, off; nothing handed over.
+    const shown = await popup.evaluate("[!document.getElementById('proxy-row').hidden, document.getElementById('proxy').checked, document.getElementById('proxy-row').title]");
+    if (!shown[0] || shown[1]) throw new Error(`the switch as installed: ${JSON.stringify(shown)} (want shown, off)`);
+    const off = await throughProxy(t, "off", false);
+    if (off !== 1) throw new Error(`as installed: ${off} requests through the proxy (want the browser's only)`);
+    done.push(`as installed: the switch shown, off; a VPN extension's proxy (controlled_by_other_extensions): the browser's request only`);
+
+    // On, as a user clicks it: the setting stored, no permission asked.
+    await popup.evaluate("document.getElementById('proxy').click()");
+    await until("the switch on", 5000, async () => (await popup.evaluate("chrome.storage.local.get('proxyOn').then((v) => v.proxyOn === true)")));
+    const on = await throughProxy(t, "on", true);
+    if (on < 2) throw new Error(`on: only ${on} request(s) through the proxy`);
+    done.push(`on, a fixed server: ${on} requests through it (the browser's, then MDM's)`);
+    const local = await plainWhileProxied(t);
+    if (local) throw new Error(`on: ${local} request(s) for 127.0.0.1 through the proxy (Chromium sends none there)`);
+    done.push("on: an ordinary link on 127.0.0.1 taken, straight (the proxy bypassed, as the browser does)");
+
+    await setProxy({ mode: "pac_script", pacScript: { data: pac() } });
+    const pacData = await throughProxy(t, "pac-data", true);
+    if (pacData < 2) throw new Error(`a PAC script (inline): only ${pacData} request(s) through the proxy`);
+    done.push(`an inline PAC script: ${pacData} requests through its proxy`);
+
+    await setProxy({ mode: "pac_script", pacScript: { url: `http://127.0.0.1:${PROXY_PORT}/mdm.pac` } });
+    const pacUrl = await throughProxy(t, "pac-url", true);
+    if (pacUrl < 2) throw new Error(`a PAC script (by its address): only ${pacUrl} request(s) through the proxy`);
+    done.push(`a PAC script by its address: ${pacUrl} requests through its proxy`);
+
+    // Off again: nothing more of it goes.
+    await setProxy(fixed);
+    await popup.evaluate("document.getElementById('proxy').click()");
+    await until("the switch off", 5000, async () => (await popup.evaluate("chrome.storage.local.get('proxyOn').then((v) => v.proxyOn === false)")));
+    const after = await throughProxy(t, "off-again", false);
+    if (after !== 1) throw new Error(`switched off: ${after} requests through the proxy`);
+    done.push("switched off: the browser's request only");
+  } finally {
+    await popup.close();
+    await vpn(`chrome.proxy.settings.clear({ scope: "regular" }).then(() => "cleared")`).catch(() => {});
+    await vpnPage.close();
+  }
+  // An ordinary download goes as before, with no proxy set.
+  const file = `e2e-noproxy-${t.name}.zip`;
+  await clickLink(t, `/gen/1M/${file}`);
+  await arrived(file, 1 << 20);
+  await keptNothing(t.dl);
+  const errors = await s.workerErrors();
+  if (errors.length) throw new Error(`the service worker's console: ${errors.join(" | ")}`);
+  done.push("no proxy: a download as before; no error in the service worker's console");
+  return done.join("; ");
+}
+
+// #1781: the lab's gallery shown (its <img> pictures and #bg1's background loaded, so the page
+// knows their sizes, as a user's would): what it shows.
+const GALLERY_SHOWN = `(() => {
+  const i = [...document.images];
+  const bg = performance.getEntriesByType("resource").some((e) => e.name.includes("/bg1.jpg"));
+  return i.every((x) => x.complete) && ["photo1", "photo2", "photo4", "thumb3"].every((id) => document.getElementById(id).naturalWidth > 0) && bg && i.length + " pictures and 6 CSS backgrounds on the page";
+})()`;
+
+// #1781: the gallery's CSS background pictures, never sent: not pictures located on the page.
+const GALLERY_BACKGROUNDS = ["/gen/192K/bg1.jpg", "/gen/16K/bg2.png", "/gen/64K/bg2@2x.png", "/gen/64K/bg6.webp"];
+
+// #1781: MDM's look-ups in Link grabber of the gallery's run `seed` (its requests, not the
+// browser's own for the pictures it showed: those say Sec-Fetch-Mode no-cors): each of `sent`,
+// and none of `left`. On Windows, Link grabber's window is seen and closed: its windows.
+async function galleryLookups(seed, sent, left) {
+  const mdmFor = async (p) => (await requests(p)).filter((e) => e.sec_fetch_mode !== "no-cors" && new URLSearchParams(e.query || "").get("seed") === String(seed));
+  await until(`MDM's look-ups of the ${sent.length} in Link grabber`, 60000, async () => {
+    for (const p of sent) if (!(await mdmFor(p)).length) return false;
+    return true;
+  }).catch(async (e) => {
+    const missing = [];
+    for (const p of sent) if (!(await mdmFor(p)).length) missing.push(p);
+    e.message += ` (none for ${missing.join(", ")})`;
+    throw e;
+  });
+  // A moment more for a look-up that shouldn't come.
+  await sleep(3000);
+  for (const p of left) {
+    const asked = await mdmFor(p);
+    if (asked.length) throw new Error(`MDM asked for ${p}, left out: ${asked.map(brief).join("; ")}`);
+  }
+  if (!WIN) return "";
+  const pid = ourApps()[0];
+  const open = await until("Link grabber", 20000, () => appWindows(pid).includes("Link grabber") && appWindows(pid));
+  appWindows(pid, "Link grabber");
+  return `; windows: ${open.join(", ")}`;
+}
+
+const CASES = {
+  // #578: a download another extension starts in a folder of its own, of a type MDM doesn't
+  // take, lands in that folder. Chromium only (Firefox has no onDeterminingFilename): MDM's
+  // listener answers for every download, and an answer that names nothing must not empty the
+  // other extension's name.
+  async folders(t) {
+    if (t.kind !== "chromium") throw new Skip("Chromium's onDeterminingFilename only");
+    const page = await t.session.loadExtension(folderExtension(), "page.html", "downloads");
+    try {
+      const file = `e2e-folders-${t.name}.png`;
+      const sub = path.join("Pic", "OthersW");
+      const id = await page.evaluate(`chrome.downloads.download({ url: ${JSON.stringify(`${LAB}/gen/64K/${file}`)}, filename: ${JSON.stringify(`Pic/OthersW/${file}`)} })`);
+      const want = path.join(t.dl, sub, file);
+      const where = () => {
+        const found = [];
+        const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).forEach((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : found.push(path.relative(t.dl, path.join(d, e.name)))));
+        walk(t.dl);
+        return found;
+      };
+      try {
+        await until(`${file} in the stand-in's folder`, 20000, () => fs.existsSync(want) && fs.statSync(want).size === 64 << 10);
+      } catch {
+        throw new Error(`the browser saved it as ${JSON.stringify(where())} (want ${path.join(sub, file)})`);
+      }
+      const mdm = (await mdmList().catch(() => [])).filter((d) => d.file === file);
+      if (mdm.length) throw new Error(`MDM took it too: ${JSON.stringify(mdm)}`);
+      const got = (await requests(`/gen/64K/${file}`)).map(brief);
+      for (const f of fs.readdirSync(t.dl)) fs.rmSync(path.join(t.dl, f), { force: true, recursive: true });
+      return `download ${id} saved in ${path.join(sub, file)}, MDM left it (the lab's log: ${got.join("; ")})`;
+    } finally {
+      await page.close();
+    }
+  },
+  // #42: the browser behind a proxy (a VPN or proxy extension's). The file's host (lab.mdm.test) is
+  // known to that proxy only, so MDM can download it only through the same proxy, which the
+  // extension hands over with the download, once the user switched that on: the popup's switch
+  // asks for the optional "proxy" permission (Firefox). Chrome can't make it optional, so its
+  // extension has it from the install and the switch is its own setting (proxyInChromium).
+  async proxy(t) {
+    if (!t.session.inBrowser) return proxyInChromium(t);
+    const s = t.session;
+    const pref = (k, v) => s.inBrowser(`(Services.prefs.${typeof v === "number" ? "setIntPref" : typeof v === "boolean" ? "setBoolPref" : "setStringPref"}(${JSON.stringify(k)}, ${JSON.stringify(v)}), "set")`);
+    // The browser's proxy, as a VPN extension sets it (Firefox's own setting: 127.0.0.1 itself
+    // stays direct).
+    await pref("network.proxy.http", "127.0.0.1");
+    await pref("network.proxy.http_port", PROXY_PORT);
+    await pref("network.proxy.type", 1);
+    // Its switches are on the Settings tab (#1496), where a click lands on them.
+    const popupUrl = `${s.base}popup.html?tab=settings`;
+    const granted = async (popup) => popup.evaluate("browser.permissions.contains({ permissions: ['proxy'] })");
+    // One file through the lab's host: how many of its requests went through the proxy (the
+    // browser's own first; MDM's when it got the proxy) after `wait` ms.
+    const fetchFile = async (label, wantMdm) => {
+      proxyLog.length = 0;
+      const file = `e2e-proxy-${t.name}-${label}.xz`;
+      await clickLink(t, `http://${PROXY_HOST}:${PORT}/gen/1M/${file}`);
+      if (wantMdm) await arrived(file, 1 << 20, "");
+      else await sleep(8000);
+      await keptNothing(t.dl);
+      return proxyLog.filter((e) => e.target.includes(file)).length;
+    };
+    const done = [];
+    let perRequest = "";
+    try {
+      const popup = await s.tab(popupUrl);
+      try {
+        await until("the popup", 10000, () => popup.evaluate(`document.readyState === "complete" && Boolean(document.getElementById("proxy-row"))`).catch(() => false));
+        await sleep(300);
+        // As installed: the switch shown, off; nothing handed over.
+        const shown = await popup.evaluate("[!document.getElementById('proxy-row').hidden, document.getElementById('proxy').checked]");
+        if (!shown[0] || shown[1]) throw new Error(`the switch as installed: ${JSON.stringify(shown)} (want shown, off)`);
+        if (await granted(popup)) throw new Error("the permission is granted as installed");
+        const off = await fetchFile("off", false);
+        if (off !== 1) throw new Error(`as installed: ${off} requests through the proxy (want the browser's only)`);
+        done.push("as installed: off, the browser's request only");
+
+        // Refused: the browser asks (its prompt), the user says no.
+        await pref("extensions.webextOptionalPermissionPrompts", true);
+        await popup.click("#proxy");
+        const ids = await until("the browser's permission prompt", 10000, () =>
+          s.inBrowser(`PopupNotifications._currentNotifications.map((n) => n.id)`).then((l) => l.length && l),
+        );
+        const refused = await s.inBrowser(`(() => {
+          const n = PopupNotifications._currentNotifications.find((x) => /permissions/.test(x.id));
+          if (!n) return "no prompt";
+          n.secondaryActions[0].callback();
+          PopupNotifications.remove(n);
+          return "refused";
+        })()`);
+        if (refused !== "refused") throw new Error(`the prompt (${JSON.stringify(ids)}): ${refused}`);
+        await until("the switch back off", 5000, async () => !(await popup.evaluate("document.getElementById('proxy').checked")));
+        if (await granted(popup)) throw new Error("refused, yet granted");
+        const no = await fetchFile("refused", false);
+        if (no !== 1) throw new Error(`refused: ${no} requests through the proxy`);
+        done.push(`refused at the prompt (${ids.join(", ")}): off, the browser's request only`);
+
+        // Granted: the switch on, MDM downloads through the same proxy.
+        await pref("extensions.webextOptionalPermissionPrompts", false);
+        await popup.click("#proxy");
+        await until("the permission granted", 10000, () => granted(popup));
+        await until("the switch on", 5000, () => popup.evaluate("document.getElementById('proxy').checked"));
+        const on = await fetchFile("on", true);
+        if (on < 2) throw new Error(`granted: only ${on} request(s) through the proxy`);
+        done.push(`granted: ${on} requests through the browser's proxy (the browser's, then MDM's)`);
+        // An ordinary link on 127.0.0.1 is still taken (Firefox itself never proxies it; MDM
+        // may, the test proxy passes it on: said, not failed).
+        const local = await plainWhileProxied(t);
+        done.push(`granted: an ordinary link on 127.0.0.1 taken (${local} of its requests through the proxy)`);
+
+        // Granted, the proxy set per request by a VPN extension (proxy.onRequest, as Firefox's
+        // proxy and VPN add-ons do) rather than in the browser's settings: MDM gets that one too.
+        await pref("network.proxy.type", 0);
+        // A failure here is said at the end, after the other steps.
+        const vpn = await s.install(firefoxVpnExtension());
+        try {
+          await sleep(1000);
+          const per = await fetchFile("onrequest", true);
+          if (per < 2) throw new Error(`only ${per} request(s) through it`);
+          done.push(`granted, a VPN add-on's per-request proxy (proxy.onRequest): ${per} requests through it`);
+        } catch (e) {
+          perRequest = `a VPN add-on's per-request proxy (proxy.onRequest): ${e.message}`;
+          for (const f of fs.readdirSync(t.dl)) fs.rmSync(path.join(t.dl, f), { force: true, recursive: true });
+        } finally {
+          await s.uninstall(vpn).catch(() => {});
+          await pref("network.proxy.type", 1);
+        }
+
+        // Revoked: the switch off again.
+        await popup.click("#proxy");
+        await until("the permission removed", 10000, async () => !(await granted(popup)));
+        const after = await fetchFile("revoked", false);
+        if (after !== 1) throw new Error(`revoked: ${after} requests through the proxy`);
+        done.push("switched off: removed, the browser's request only");
+      } finally {
+        await popup.close();
+      }
+      // Nothing in the browser's console from the extension.
+      const errors = await s.inBrowser(`Services.console.getMessageArray()
+        .filter((m) => m instanceof Ci.nsIScriptError && !(m.flags & Ci.nsIScriptError.warningFlag) && String(m.sourceName).startsWith(${JSON.stringify(s.base)}))
+        .map((m) => m.errorMessage)`);
+      if (errors.length) throw new Error(`the extension's console: ${errors.join(" | ")}`);
+      done.push("no error in the console");
+      if (perRequest) throw new Error(`${perRequest} (the rest ok: ${done.join("; ")})`);
+      return done.join("; ");
+    } finally {
+      await pref("network.proxy.type", 0).catch(() => {});
+      await pref("extensions.webextOptionalPermissionPrompts", true).catch(() => {});
+    }
+  },
+
+  // A .zip link, throttled (the browser's download is held while MDM is asked: Firefox pauses it)
+  // and at full speed.
+  async link(t) {
+    const done = [];
+    for (const [file, query] of [[`e2e-${t.name}-slow.zip`, "?rate=256K"], [`e2e-${t.name}.zip`, ""]]) {
+      const url = `/gen/2M/${file}${query}`;
+      const size = await sizeOf(LAB + url);
+      await clickLink(t, url);
+      await arrived(file, size);
+      await keptNothing(t.dl);
+      done.push(query ? "throttled" : "full speed");
+    }
+    return done.join(", ");
+  },
+
+  // #208: Firefox set to ask what to do with each new type (Waterfox's default): the download is
+  // caught from the answer before the browser's "What should … do with this file?" dialog, which
+  // never opens, and the browser doesn't download the file behind it. Firefox's family only.
+  async ask(t) {
+    if (!t.session.inBrowser) throw new Skip("Firefox's family only");
+    const s = t.session;
+    const always = JSON.stringify("browser.download.always_ask_before_handling_new_types");
+    // As the run set it (E2E_FIREFOX_ASK), put back after.
+    const was = await s.inBrowser(`Services.prefs.getBoolPref(${always}, false)`);
+    await s.inBrowser(`(Services.prefs.setBoolPref(${always}, true), "set")`);
+    try {
+      const file = `e2e-ask-${t.name}.zip`;
+      const url = `/gen/2M/${file}?rate=512K`;
+      const size = await sizeOf(LAB + url);
+      await clickLink(t, url);
+      await arrived(file, size);
+      const dialog = await s.inBrowser(
+        `[...Services.wm.getEnumerator(null)].some((w) => Boolean(w.document.getElementById("unknownContentTypeWindow")))`,
+      );
+      if (dialog) throw new Error("the browser's dialog opened");
+      await keptNothing(t.dl);
+      // The browser's own request (the first) was stopped before it had the file.
+      const [own] = (await requests(`/gen/2M/${file}`)).filter((e) => e.method === "GET");
+      if (!own || own.bytes_sent >= size) throw new Error(`the browser downloaded the file itself: ${own ? brief(own) : "no request"}`);
+      return `no dialog, MDM has it, the browser's request stopped after ${own.bytes_sent} bytes`;
+    } finally {
+      await s.inBrowser(`(Services.prefs.setBoolPref(${always}, ${was === true}), "set")`).catch(() => {});
+    }
+  },
+
+  // Cookies and referrer: a file behind a session cookie and hotlink protection.
+  async cookie(t) {
+    await t.session.navigate(`${LAB}/cookie?set=sid=1`);
+    const file = `e2e-c-${t.name}.zip`;
+    const prefix = `${LAB}/page`;
+    const link = `/gen/1M/${file}?require_cookie=sid%3D1&require_referer=${encodeURIComponent(prefix)}`;
+    await clickLink(t, link);
+    await arrived(file, 1 << 20);
+    const mdm = await mdmRequests(`/gen/1M/${file}`);
+    for (const e of mdm) {
+      if (!/(^|;\s*)sid=1(;|$)/.test(e.cookie || "")) throw new Error(`MDM's request without the cookie: ${brief(e)} cookie=${e.cookie}`);
+      if (!(e.referer || "").startsWith(prefix)) throw new Error(`MDM's request without the referrer: ${brief(e)} referer=${e.referer}`);
+      if (e.user_agent !== t.ua) throw new Error(`MDM's User-Agent ${e.user_agent} is not the browser's ${t.ua}`);
+      if (e.status >= 400) throw new Error(`MDM's request refused: ${brief(e)}`);
+    }
+    await keptNothing(t.dl);
+    return `${mdm.length} request(s) with sid=1, the page as referrer, the browser's User-Agent`;
+  },
+
+  // #607: a page whose referrer policy is `origin` (as a link to another site's file gets by
+  // default; the lab stays on 127.0.0.1, which IDM may be told to leave alone): the browser sends
+  // only the page's site as the Referer, the extension the page itself, which MDM keeps with the
+  // download (its list on disk): Refresh download address opens it.
+  async startedfrom(t) {
+    const file = `e2e-from-${t.name}.zip`;
+    const page = `${LAB}/page?referrer=origin&link=${encodeURIComponent(`/gen/1M/${file}`)}`;
+    await t.session.navigate(page);
+    await t.session.evaluate("document.getElementById('link').click()");
+    await arrived(file, 1 << 20);
+    await keptNothing(t.dl);
+    const saved = await until(`${file} saved with its page`, 20000, () => {
+      try {
+        const list = JSON.parse(fs.readFileSync(path.join(data, "downloads.json"), "utf8").replace(/^\uFEFF/, ""));
+        return (list.items || []).find((i) => String(i.dest || "").endsWith(file) && i.page) || null;
+      } catch {
+        return null;
+      }
+    });
+    if (saved.page !== page) throw new Error(`saved with the page ${saved.page}, not ${page}`);
+    if (saved.referer !== `${LAB}/`) throw new Error(`its Referer is ${saved.referer}, not the site's address ${LAB}/`);
+    return `the page ${saved.page} kept with it, its Referer ${saved.referer}`;
+  },
+
+  // Names from Content-Disposition: filename= and filename*= (UTF-8).
+  async names(t) {
+    const plain = `e2e-report-${t.name}.zip`;
+    const star = `报告-e2e-${t.name}.zip`;
+    await clickLink(t, `/gen/1M/download.php?cd=${encodeURIComponent(plain)}`);
+    await arrived(plain, 1 << 20);
+    await keptNothing(t.dl);
+    await clickLink(t, `/gen/1M/get?cdstar=${encodeURIComponent(star)}`);
+    await arrived(star, 1 << 20);
+    await keptNothing(t.dl);
+    // #447: raw UTF-8 in filename=, no filename* (Firefox gives extensions its bytes).
+    const raw = `تقرير-e2e-${t.name}.zip`;
+    await clickLink(t, `/gen/1M/raw.php?cd=${encodeURIComponent(raw)}`);
+    await arrived(raw, 1 << 20);
+    await keptNothing(t.dl);
+    const wrong = fs.readdirSync(path.join(downloads, "Compressed")).filter((f) => /^(download\.php|get|fallback-name\.zip)/.test(f));
+    if (wrong.length) throw new Error(`saved under the address's or the fallback name too: ${wrong.join(", ")}`);
+    return `${plain}, ${star}, ${raw}`;
+  },
+
+  // #1058: a .torrent from a tracker's download.php (named by Content-Disposition, sent as
+  // application/x-bittorrent) stays with the browser while Torrent settings' "Open magnet links
+  // and .torrent files with Mister Download Manager" is off, as by default, though TORRENT is in
+  // File types (it is in this run's list); with it on, MDM takes it (its Add torrent fetches it)
+  // and the browser keeps nothing.
+  async torrents(t) {
+    const p = `/gen/16K/tracker-${t.name}/download.php`;
+    const link = (name) => `${p}?id=42&cd=${encodeURIComponent(name)}&type=${encodeURIComponent("application/x-bittorrent")}`;
+    const off = `e2e-show-${t.name}.torrent`;
+    await clickLink(t, link(off));
+    const at = path.join(t.dl, off);
+    try {
+      await until(`${off} in the browser's folder`, 20000, () => fs.existsSync(at) && fs.statSync(at).size === 16 << 10);
+    } catch (e) {
+      e.message += ` (requests: ${(await requests(p)).map(brief).join("; ") || "none"}; the browser's folder: ${fs.readdirSync(t.dl).join(", ") || "empty"})`;
+      throw e;
+    }
+    await sleep(2000);
+    const asked = await requests(p);
+    if (asked.length !== 1) throw new Error(`off: ${asked.length} requests (only the browser's expected): ${asked.map(brief).join("; ")}`);
+    if ((await mdmList()).some((d) => d.file === off)) throw new Error("off: MDM took it too");
+    if (WIN && appWindows(appPid()).includes("Add torrent")) throw new Error("off: Add torrent opened");
+    // MDM's log says why (the host's line, or the extension's notice it wrote down).
+    const logged = () => {
+      const file = path.join(data, "logs", "mdm.log");
+      const log = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+      return log.split(/\r?\n/).find((l) => l.includes(off) && l.includes("Torrent settings"));
+    };
+    const why = await until("MDM's log line for it", 10000, logged).catch(() => {
+      throw new Error("off: MDM's log doesn't say why it stayed with the browser");
+    });
+    fs.rmSync(at);
+    // E2E_SHOTS (Chromium): <lang>-<scheme>-torrent-left.png, the popup saying why.
+    const shots = process.env.E2E_SHOTS ? path.resolve(process.env.E2E_SHOTS) : "";
+    const tag = `${process.env.E2E_LANG || "en"}-${process.env.E2E_COLOR_SCHEME || "system"}`;
+    if (shots && t.session.tab) {
+      // The reason is on the popup's This page tab (#1496).
+      const popup = await t.session.tab(`${t.session.base}popup.html?tab=page`);
+      try {
+        const said = await until("the popup's reason", 10000, () =>
+          popup.evaluate(`(() => { const b = document.getElementById("declined"); return b && !b.hidden && document.getElementById("declined-why").textContent; })()`).catch(() => ""),
+        );
+        await sleep(500);
+        await popup.shot(path.join(shots, `${tag}-torrent-left.png`));
+        if (!said) throw new Error("the popup gives no reason");
+      } finally {
+        await popup.close();
+      }
+    }
+    // On: the extension learns it at its next question for the rules (Chromium: asked now;
+    // Firefox: once its copy is a minute old).
+    await panelSettings({ torrent_handler: true });
+    try {
+      if (t.session.inExtension) await t.session.inExtension("refreshRules().then(() => true)");
+      else {
+        await sleep(61000);
+        const primer = `e2e-primer-${t.name}.torrent`;
+        await clickLink(t, link(primer));
+        await until(`${primer} in the browser's folder`, 20000, () => fs.existsSync(path.join(t.dl, primer)));
+        await sleep(2000);
+        fs.rmSync(path.join(t.dl, primer), { force: true });
+      }
+      await clearLog();
+      const on = `e2e-show-on-${t.name}.torrent`;
+      await clickLink(t, link(on));
+      // Add torrent fetches it with the browser's request (MDM's own request after the browser's).
+      // The app started again with the setting (panelSettings): its process now.
+      const pid = WIN ? appPid() : 0;
+      await until("MDM's request for it", 20000, async () => (await requests(p)).length >= 2);
+      if (WIN) {
+        await until("Add torrent", 15000, () => appWindows(pid).includes("Add torrent")).catch((e) => {
+          e.message += ` (its windows: ${JSON.stringify(appWindows(pid))})`;
+          throw e;
+        });
+        // E2E_SHOTS: <lang>-<scheme>-torrent-taken.png, Add torrent as the browser's .torrent
+        // opens it (what the setting off did too, before #1058).
+        if (shots) {
+          await sleep(3000);
+          const cap = path.join(root, "tools", "lab", "cap-own.ps1");
+          spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", cap, "-ProcessId", String(pid), "-Title", "Add torrent", "-Out", path.join(shots, `${tag}-torrent-taken.png`)], { stdio: "ignore" });
+        }
+        appWindows(pid, "Add torrent");
+        await until("Add torrent closed", 5000, () => !appWindows(pid).includes("Add torrent"));
+      }
+      await keptNothing(t.dl);
+    } finally {
+      await panelSettings({ torrent_handler: false });
+    }
+    return `off: the browser kept ${off}, MDM's log says why (${why.split(": ").slice(-1)[0].slice(0, 60)}...); on: Add torrent fetched it, the browser kept nothing`;
+  },
+
+  // A redirect: MDM keeps the address clicked (it asks it again to renew the link).
+  async redirect(t) {
+    const file = `e2e-r-${t.name}.zip`;
+    const link = `/redirect?to=${encodeURIComponent(`/gen/2M/${file}`)}`;
+    await clickLink(t, link);
+    const item = await arrived(file, 2 << 20);
+    if (item.url !== LAB + link) throw new Error(`MDM's address is ${item.url}, not the one clicked (${LAB + link})`);
+    await mdmRequests(`/gen/2M/${file}`);
+    await keptNothing(t.dl);
+    return "the address clicked kept, the file from its target";
+  },
+
+  // #1427: a link that only redirects (302) to its file, whose own answer alone names it: MDM
+  // saves it under the name the browser gives it (filename* or a percent-encoded filename),
+  // through a relative Location and two redirects too, never the first address's name.
+  async redirectNames(t) {
+    const enc = encodeURIComponent;
+    const star = (n) => `attachment; filename="fallback.bin"; filename*=UTF-8''${enc(n)}`;
+    const cases = [
+      ["both", `e2e Report – both ${t.name}.zip`, star, (f) => `/redirect?to=${enc(`/${f}`)}`],
+      ["star only", `e2e Report – star ${t.name}.zip`, (n) => `attachment; filename*=UTF-8''${enc(n)}`, (f) => `/redirect?to=${enc(`/${f}`)}`],
+      ["plain %20", `e2e Report plain ${t.name}.zip`, (n) => `attachment; filename="${n.replaceAll(" ", "%20")}"`, (f) => `/redirect?to=${enc(`/${f}`)}`],
+      ["relative", `e2e Report – relative ${t.name}.zip`, star, (f) => `/redirect?to=${enc(f)}`],
+      ["two", `e2e Report – two ${t.name}.zip`, star, (f) => `/redirect?to=${enc(`/redirect?to=${enc(`/${f}`)}`)}`],
+      ["pdf", `e2e Report – pdf ${t.name}.pdf`, star, (f) => `/redirect?to=${enc(`/${f}`)}`],
+      // Files the browser would show or play, named inline (#948's rule makes them downloads).
+      ["pdf inline", `e2e Report – inline ${t.name}.pdf`, (n) => `inline; filename*=UTF-8''${enc(n)}`, (f) => `/redirect?to=${enc(`/${f}&type=application%2Fpdf`)}`],
+      ["mp4 inline %20", `e2e Clip inline ${t.name}.mp4`, (n) => `inline; filename="${n.replaceAll(" ", "%20")}"`, (f) => `/redirect?to=${enc(`/${f}&type=video%2Fmp4`)}`],
+    ];
+    const folder = (n) => (n.endsWith(".pdf") ? "Documents" : n.endsWith(".mp4") ? "Video" : "Compressed");
+    const done = [];
+    for (const [label, name, cd, link] of cases) {
+      // As in `opened`: IDM, when it runs, takes a PDF or a video the browser would show.
+      if (idmRunning && label.includes("inline")) {
+        done.push(`${label} (left out: IDM runs and takes it)`);
+        continue;
+      }
+      const file = `gen/1M/download?seed=${done.length + 41}&cdraw=${enc(cd(name))}`;
+      await clickLink(t, link(file));
+      try {
+        await arrived(name, 1 << 20, folder(name));
+      } catch (e) {
+        const tab = await t.session.evaluate("[location.href, document.contentType]").catch((x) => x.message);
+        const log = (await requests("/gen/1M/download")).slice(-3).map(brief).join("; ");
+        e.message = `${label}: ${e.message} [the tab: ${JSON.stringify(tab)}; the file's last requests: ${log}; the browser's folder: ${fs.readdirSync(t.dl).join(", ") || "empty"}]`;
+        throw e;
+      }
+      await keptNothing(t.dl);
+      done.push(label);
+    }
+    return `named by the file's own answer: ${done.join(", ")}`;
+  },
+
+  // A page that goes to the file by script (#374): MDM gets the file's address, not the page's.
+  async leadon(t) {
+    const file = `e2e-leadon-${t.name}.zip`;
+    const page = `/leadon?to=${encodeURIComponent(`/gen/2M/${file}`)}`;
+    await t.session.navigate(`${LAB}${page}`);
+    const item = await arrived(file, 2 << 20);
+    if (item.url !== `${LAB}/gen/2M/${file}`) throw new Error(`MDM's address is ${item.url}, not the file's`);
+    const asked = await requests(page.split("?")[0]);
+    if (asked.length !== 1) throw new Error(`the page was asked ${asked.length} times (only the browser's expected)`);
+    await keptNothing(t.dl);
+    return "the file's address, the page asked by the browser only";
+  },
+
+  // A form's download: MDM posts it again with the form's body; one answered 303 too.
+  async form(t) {
+    const name = `e2e-form-${t.name}.zip`;
+    await t.session.navigate(`${LAB}/formpage?size=1M&name=${encodeURIComponent(name)}`);
+    await t.session.evaluate("document.getElementById('submit-form').click()");
+    await arrived(name, 1 << 20);
+    const posts = await mdmRequests(`/form/1M/${name}`);
+    for (const e of posts) {
+      if (e.method !== "POST") throw new Error(`MDM didn't post the form again: ${brief(e)}`);
+      if (!/(^|&)token=abc(&|$)/.test(e.req_body_head || "")) throw new Error(`MDM's post without token=abc: ${e.req_body_head}`);
+      if (e.status >= 400) throw new Error(`MDM's post refused: ${brief(e)}`);
+    }
+    await keptNothing(t.dl);
+    // Posted, answered "303 See Other" with the file's address.
+    const other = `see-other-${name}`;
+    await t.session.navigate(`${LAB}/formpage?size=1M&name=${encodeURIComponent(name)}`);
+    await t.session.evaluate("document.getElementById('submit-see-other').click()");
+    await arrived(other, 1 << 20);
+    const seen = [...(await requests(`/form/1M/${other}`)), ...(await requests(`/gen/1M/${other}`))].sort((a, b) => a.req - b.req);
+    await keptNothing(t.dl);
+    return `posted again with token=abc (${posts.length} request(s)); 303: ${seen.map((e) => `${e.method} ${e.path.split("/")[1]} ${e.status}`).join(", ")}`;
+  },
+
+  // Alt+click (Option+click on a Mac, #332): the browser keeps the download, MDM gets nothing. The
+  // extension stops the browser's own Alt+click (Chromium's save of the link without opening it)
+  // and follows the link as a plain click, so its page opens in the tab (#1494). A link to the
+  // file; one that redirects to it; one to a page whose script goes to the file; one to a page
+  // behind a bot check whose script must run first (the lab's js_challenge: "Just a moment...",
+  // a cookie set and the address loaded again 3 s later, then the file: before #1494 Chromium
+  // saved the check's page); Firefox's family: its default setting too, where the browser alone
+  // does nothing with an Alt+click (browser.altClickSave off; the run's profile has it on).
+  async alt(t) {
+    const firefox = Boolean(t.session.inBrowser);
+    const kept = async (label, link, file, { refused = 0 } = {}) => {
+      const p = `/gen/1M/${file}`;
+      await t.session.navigate(`${LAB}/page?link=${encodeURIComponent(link)}`);
+      const a = await rect(t.session, "#link");
+      await t.session.mouse((a.l + a.r) / 2, (a.t + a.b) / 2, "click", { alt: true });
+      const at = path.join(t.dl, file);
+      try {
+        await until(`${file} in the browser's folder`, 20000, () => {
+          const names = fs.readdirSync(t.dl);
+          return names.length === 1 && names[0] === file && fs.statSync(at).size === 1 << 20;
+        });
+      } catch (e) {
+        const item = (await mdmList()).find((d) => d.file === file);
+        const tab = await t.session.evaluate("location.href").catch((x) => x.message);
+        e.message += ` (${label}; MDM: ${item ? `${item.status} ${item.path}` : "nothing"}; the tab: ${tab}; requests: ${(await requests(p)).map(brief).join("; ") || "none"}; the browser's folder: ${fs.readdirSync(t.dl).join(", ") || "empty"})`;
+        throw e;
+      }
+      await sleep(1500);
+      const item = (await mdmList()).find((d) => d.file === file);
+      if (item) throw new Error(`${label}: MDM got it too: ${item.status} ${item.path}`);
+      const all = await requests(p);
+      // The check's page first (the browser's page load, refused), then the file, once.
+      const served = all.filter((e) => e.status === 200);
+      const checks = all.filter((e) => e.outcome === "fault:js_challenge");
+      if (served.length !== 1 || checks.length !== refused || all.length !== refused + 1) {
+        throw new Error(`${label}: ${all.length} requests for it (${refused ? `the check's page and ` : ""}only the browser's expected): ${all.map(brief).join("; ")}`);
+      }
+      if (refused && all.at(-1).status !== 200) throw new Error(`${label}: the file wasn't asked after the check: ${all.map(brief).join("; ")}`);
+      fs.rmSync(at);
+      return label;
+    };
+    const done = [];
+    const name = (k) => `e2e-alt-${k}-${t.name}.zip`;
+    done.push(await kept("the link", `/gen/1M/${name("link")}`, name("link")));
+    done.push(await kept("a redirect", `/redirect?to=${encodeURIComponent(`/gen/1M/${name("redirect")}`)}`, name("redirect")));
+    done.push(await kept("a page's script", `/leadon?to=${encodeURIComponent(`/gen/1M/${name("script")}`)}`, name("script")));
+    done.push(await kept("a bot check's page (3 s)", `/gen/1M/${name("check")}?js_challenge=3000`, name("check"), { refused: 1 }));
+    if (firefox) {
+      const pref = JSON.stringify("browser.altClickSave");
+      await t.session.inBrowser(`(Services.prefs.setBoolPref(${pref}, false), "set")`);
+      try {
+        done.push(await kept("Firefox's default (no save on Alt+click)", `/gen/1M/${name("default")}`, name("default")));
+      } finally {
+        await t.session.inBrowser(`(Services.prefs.setBoolPref(${pref}, true), "set")`).catch(() => {});
+      }
+    }
+    return `the browser's own download, MDM untouched: ${done.join(", ")}`;
+  },
+
+  // #1049: a site in Options' excluded sites keeps the files its pages link to on another host
+  // (a CDN) in the browser, by the page the download came from (its referrer): a page on
+  // localhost, listed, links to a file on 127.0.0.1, not listed.
+  async sites(t) {
+    const file = `e2e-sites-${t.name}.zip`;
+    const p = `/gen/1M/${file}`;
+    const saved = JSON.parse(fs.readFileSync(path.join(data, "downloads.json"), "utf8").replace(/^﻿/, ""));
+    const was = saved.settings.excluded_sites;
+    await panelSettings({ excluded_sites: "localhost" });
+    try {
+      await t.session.navigate(`http://localhost:${PORT}/page?link=${encodeURIComponent(LAB + p)}`);
+      await t.session.evaluate("document.getElementById('link').click()");
+      const at = path.join(t.dl, file);
+      try {
+        await until(`${file} in the browser's folder`, 20000, () => {
+          const names = fs.readdirSync(t.dl);
+          return names.length === 1 && names[0] === file && fs.statSync(at).size === 1 << 20;
+        });
+      } catch (e) {
+        const item = (await mdmList()).find((d) => d.file === file);
+        e.message += ` (MDM: ${item ? `${item.status} ${item.path}` : "nothing"}; requests: ${(await requests(p)).map(brief).join("; ") || "none"})`;
+        throw e;
+      }
+      await sleep(1500);
+      const item = (await mdmList()).find((d) => d.file === file);
+      if (item) throw new Error(`MDM got it too: ${item.status} ${item.path}`);
+      const all = await requests(p);
+      if (all.length !== 1) throw new Error(`${all.length} requests for it (only the browser's expected): ${all.map(brief).join("; ")}`);
+      fs.rmSync(at);
+    } finally {
+      await panelSettings({ excluded_sites: was });
+    }
+    return "a file on 127.0.0.1 linked from a listed site's page (localhost): the browser's, MDM untouched";
+  },
+
+  // Download all links on a page of 20,000 links with long paths (E2E_MANY_LINKS: another
+  // number), about 5 MB of them, past the 1 MB a message to the host may be: sent in parts, they
+  // open in Link grabber as one list, every link once, and nothing opens the help page. Firefox's
+  // right-click menu is opened and its item chosen; Chromium's can't be opened headless, so its
+  // handler is called as the menu calls it.
+  async manylinks(t) {
+    const n = Number(process.env.E2E_MANY_LINKS || 20000);
+    const page = `${LAB}/page?files=${n}&pathlen=200&title=many`;
+    await t.session.navigate(page);
+    const log = path.join(data, "logs", "mdm.log");
+    const from = fs.existsSync(log) ? fs.statSync(log).size : 0;
+    const label = "Download all links with Mister Download Manager";
+    const help = "https://misterdownloadmanager.com/help/browser-help.html";
+    // The tabs open now (the help page's, when the extension explains a failure).
+    const tabs = () =>
+      t.kind === "chromium"
+        ? t.session.inExtension(`chrome.tabs.query({}).then((ts) => ts.map((x) => x.pendingUrl || x.url || ""))`)
+        : t.session.inBrowser(`[...gBrowser.tabs].map((x) => x.linkedBrowser.currentURI.spec || "")`);
+    const started = Date.now();
+    let clicked;
+    if (t.kind === "chromium") {
+      clicked = await t.session.inExtension(`(async () => {
+        const tab = (await chrome.tabs.query({})).find((x) => x.url === ${JSON.stringify(page)});
+        if (!tab) return "no tab";
+        await menuClicked({ menuItemId: "mdm-all", pageUrl: tab.url, frameId: 0 }, tab);
+        const { status } = await chrome.storage.local.get("status");
+        return "called; status " + JSON.stringify(status && status.why) + ", badge " + JSON.stringify(await chrome.action.getBadgeText({}));
+      })()`);
+    } else {
+      const at = await t.session.evaluate(`(() => { const b = document.getElementById("blank").getBoundingClientRect(); return [b.left + 4, b.top + b.height / 2]; })()`);
+      clicked = await t.session.menu(at[0], at[1], label);
+      if (!String(clicked).startsWith("chosen")) throw new Error(`the menu: ${clicked}`);
+    }
+    // E2E_OLD_APP (a released app and its host, which know no parts): each part reaches Link
+    // grabber as a list of its own, and nothing says why (no line in its log): it opens, and no
+    // help page does.
+    if (process.env.E2E_OLD_APP) {
+      if (!WIN) throw new Skip(NO_UIA);
+      const pid = ourApps()[0];
+      const shown = await until("Link grabber", 120000, async () => (await tabs()).some((u) => u.startsWith(help)) ? ["help"] : appWindows(pid).includes("Link grabber") && appWindows(pid));
+      if (shown[0] === "help") throw new Error(`the help page opened: ${(await tabs()).join(", ")} (${clicked})`);
+      await sleep(3000);
+      if ((await tabs()).some((u) => u.startsWith(help))) throw new Error(`the help page opened: ${(await tabs()).join(", ")}`);
+      await stopApp();
+      return `an older app: Link grabber opened (${shown.join(", ")}), no help page in ${((Date.now() - started) / 1000).toFixed(1)} s (${clicked})`;
+    }
+    // The app's line once the list is whole (crates/app/src/linkparts.rs), or the help page.
+    const said = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").slice(from) : "");
+    const whole = new RegExp(`a page's (\\d+) links came in (\\d+) parts`);
+    let got = null;
+    try {
+      got = await until("the page's links in MDM", 90000, async () => whole.exec(said()) || ((await tabs()).some((u) => u.startsWith(help)) && "help"));
+    } catch (e) {
+      e.message += ` (${clicked}; tabs: ${(await tabs()).join(", ")})`;
+      throw e;
+    }
+    const open = await tabs();
+    if (got === "help") throw new Error(`the help page opened instead: ${open.filter((u) => u.startsWith(help)).join(", ")} (${clicked})`);
+    const [, links, parts] = got.map(Number);
+    if (links !== n) throw new Error(`${links} links reached MDM, not ${n} (${parts} parts)`);
+    if (parts < 2) throw new Error(`in ${parts} part: the test's list should need more`);
+    const ms = Date.now() - started;
+    let windows = "";
+    if (WIN) {
+      const pid = ourApps()[0];
+      const shown = await until("Link grabber", 20000, () => appWindows(pid).includes("Link grabber") && appWindows(pid));
+      windows = `, windows: ${shown.join(", ")}`;
+      appWindows(pid, "Link grabber");
+    }
+    await sleep(1000);
+    const after = await tabs();
+    if (after.some((u) => u.startsWith(help))) throw new Error(`the help page opened too: ${after.join(", ")}`);
+    // Link grabber looks its links up: stopped with the app (the next case starts another).
+    await stopApp();
+    return `${links} links in ${parts} parts to Link grabber in ${(ms / 1000).toFixed(1)} s${windows}; no help page (${clicked})`;
+  },
+
+  // Files the browser would show or play, made downloads, MDM's (Chromium 128+, Firefox): typed
+  // into the address bar, the tab stays on its page. A PDF sent with "Content-Disposition:
+  // inline; filename=..." (as many servers do), one sent without it, an MP3 sent inline.
+  async opened(t) {
+    if (t.kind === "chromium" && t.session.major < 128) throw new Skip(`${t.name} ${t.session.major}: needs 128 (header conditions)`);
+    const failed = [];
+    const done = [];
+    const left = [];
+    for (const [file, query, sub, size] of [
+      [`e2e-doc-${t.name}.pdf`, "inline=1", "Documents", "1M"],
+      [`e2e-bare-${t.name}.pdf`, "inline=bare", "Documents", "1M"],
+      [`e2e-song-${t.name}.mp3`, "inline=1", "Music", "512K"],
+    ]) {
+      if (idmRunning && file.endsWith(".pdf") && query === "inline=1") {
+        left.push(`pdf ${query} (left out: IDM runs and takes it)`);
+        continue;
+      }
+      const p = `/gen/${size}/${file}`;
+      await t.session.navigate(`${LAB}/page?link=none`);
+      await t.session.navigate(`${LAB}${p}?${query}`, { download: true });
+      try {
+        await arrived(file, await sizeOf(LAB + p), sub, 20000);
+        const [at, type] = await t.session.evaluate("[location.pathname, document.contentType]");
+        if (at !== "/page" || type !== "text/html") throw new Error(`the tab shows ${at} (${type}), not the page it was on`);
+        await keptNothing(t.dl);
+        done.push(`${file.split(".").pop()} ${query}`);
+      } catch (e) {
+        const tab = await t.session.evaluate("[location.href, document.contentType]").catch((x) => x.message);
+        const log = (await requests(p)).map(brief).join("; ");
+        failed.push(`${file} (${query}): ${e.message} [the tab: ${JSON.stringify(tab)}; requests: ${log}; the browser's folder: ${fs.readdirSync(t.dl).join(", ") || "empty"}]`);
+        for (const f of fs.readdirSync(t.dl)) fs.rmSync(path.join(t.dl, f), { force: true, recursive: true });
+      }
+    }
+    if (failed.length) throw new Error(`${failed.join(" | ")}${done.length ? ` (taken: ${done.join(", ")})` : ""}`);
+    return `taken, the tab stayed: ${[...done, ...left].join(", ")}`;
+  },
+
+  // #1087: a PDF a page shows, as course sites deliver theirs from a CDN: a signed address (a
+  // query string), sent as S3's binary/octet-stream, behind a redirect to another host, in a
+  // frame (of the page's host and of another), an <embed> and an <object>: MDM's, the page
+  // stays. A PDF the page's script fetches and shows itself (its own viewer) stays the page's:
+  // taken, the page would get nothing. A listed site's frame stays the browser's (#1049).
+  async pdfs(t) {
+    if (t.kind === "chromium" && t.session.major < 128) throw new Skip(`${t.name} ${t.session.major}: needs 128 (header conditions)`);
+    // Not the excluded sites a case before listed (the extension asks them only now and then).
+    await localhostListed(t, false);
+    // The page on localhost; the files on 127.0.0.1 (another host, as a CDN is; IDM, when it
+    // runs, leaves 127.0.0.1 alone).
+    const other = `http://localhost:${PORT}`;
+    const pdf = (f, more = "") => `${LAB}/gen/256K/${f}?inline=bare${more}`;
+    const framed = (tag) => (f) => ({ html: tag.replace("SRC", pdf(f)) });
+    const shapes = [
+      ["signed", (f) => ({ nav: pdf(f, "&Expires=1893456000&Signature=abc~def__&Key-Pair-Id=K2JCJMDEHXQW5F") })],
+      ["binary", (f) => ({ nav: pdf(f, "&type=binary/octet-stream") })],
+      ["redirect", (f) => ({ nav: `${other}/redirect?to=${encodeURIComponent(pdf(f))}` })],
+      ["iframe", framed('<iframe src="SRC" width=600 height=400></iframe>')],
+      ["xframe", (f) => ({ page: `${other}/page?link=none`, ...framed('<iframe src="SRC" width=600 height=400></iframe>')(f) })],
+      ["embed", framed('<embed src="SRC" type=application/pdf width=600 height=400>')],
+      ["object", framed('<object data="SRC" type=application/pdf width=600 height=400></object>')],
+    ];
+    const done = [];
+    const failed = [];
+    const clean = () => {
+      for (const f of fs.readdirSync(t.dl)) fs.rmSync(path.join(t.dl, f), { force: true, recursive: true });
+    };
+    for (const [label, make] of shapes) {
+      const file = `e2e-${label}-${t.name}.pdf`;
+      const s = make(file);
+      const page = s.page || `${LAB}/page?link=none`;
+      try {
+        await t.session.navigate(page);
+        if (s.nav) await t.session.navigate(s.nav, { download: true });
+        if (s.html) await t.session.evaluate(`(document.body.insertAdjacentHTML("beforeend", ${JSON.stringify(s.html)}), 1)`);
+        // The usual wait: a busy computer's Chromium has been seen to start such a download 10 s late.
+        await arrived(file, 256 << 10, "Documents");
+        const at = await t.session.evaluate("location.href");
+        if (at !== page) throw new Error(`the tab shows ${at}, not the page it was on`);
+        await keptNothing(t.dl);
+        done.push(label);
+      } catch (e) {
+        const log = (await requests(`/gen/256K/${file}`)).map(brief).join("; ");
+        failed.push(`${label}: ${e.message} [requests: ${log || "none"}; the browser's folder: ${fs.readdirSync(t.dl).join(", ") || "empty"}]`);
+        clean();
+      }
+    }
+    const left = [];
+    // The page's own viewer: it fetches the file and shows what it read (a blob).
+    {
+      const file = `e2e-fetched-${t.name}.pdf`;
+      try {
+        await t.session.navigate(`${LAB}/page?link=none`);
+        const got = await t.session.evaluate(
+          `fetch(${JSON.stringify(pdf(file))}).then((r) => r.blob()).then((b) => { const f = document.createElement("iframe"); f.src = URL.createObjectURL(b); document.body.append(f); return b.size; })`,
+        );
+        if (got !== 256 << 10) throw new Error(`the page read ${got} bytes`);
+        await sleep(3000);
+        const item = (await mdmList()).find((d) => d.file === file);
+        if (item) throw new Error(`MDM took it: ${item.status} ${item.path}`);
+        const all = await requests(`/gen/256K/${file}`);
+        if (all.length !== 1) throw new Error(`${all.length} requests (only the page's expected): ${all.map(brief).join("; ")}`);
+        await keptNothing(t.dl);
+        left.push("one the page fetched: the page's");
+      } catch (e) {
+        failed.push(`fetched: ${e.message}`);
+        clean();
+      }
+    }
+    // A listed site's frame (#1049): the browser shows it, MDM untouched.
+    {
+      const file = `e2e-listed-${t.name}.pdf`;
+      const saved = JSON.parse(fs.readFileSync(path.join(data, "downloads.json"), "utf8").replace(/^﻿/, ""));
+      const was = saved.settings.excluded_sites;
+      await panelSettings({ excluded_sites: "localhost" });
+      try {
+        await localhostListed(t, true);
+        await t.session.navigate(`${other}/page?link=none`);
+        await t.session.evaluate(`(document.body.insertAdjacentHTML("beforeend", ${JSON.stringify(`<iframe src="${pdf(file)}" width=600 height=400></iframe>`)}), 1)`);
+        await sleep(4000);
+        const item = (await mdmList()).find((d) => d.file === file);
+        if (item) throw new Error(`MDM took it: ${item.status} ${item.path}`);
+        await keptNothing(t.dl);
+        left.push("a listed site's frame: shown by the browser");
+      } catch (e) {
+        failed.push(`listed: ${e.message} [requests: ${(await requests(`/gen/256K/${file}`)).map(brief).join("; ") || "none"}]`);
+        clean();
+      } finally {
+        await panelSettings({ excluded_sites: was });
+        await localhostListed(t, false);
+      }
+    }
+    if (failed.length) throw new Error(`${failed.join(" | ")}${done.length ? ` (taken: ${done.join(", ")})` : ""}`);
+    return `taken, the page stayed: ${done.join(", ")}; ${left.join("; ")}`;
+  },
+
+  // #948: such a file under the server's own name, not its address's (`main.mp4`, `main.mkv`): one
+  // played inline with "inline; filename=...", which the extension's rule makes a download (the
+  // name goes with the header: MDM reads it from its own answer), and one sent as an attachment
+  // (the rule leaves it, and its name, as they are).
+  async openedNames(t) {
+    if (t.kind === "chromium" && t.session.major < 128) throw new Skip(`${t.name} ${t.session.major}: needs 128 (header conditions)`);
+    const done = [];
+    for (const [at, query, file] of [
+      ["/gen/1M/main.mp4", "inline=1", `e2e-movie-${t.name}.mp4`],
+      ["/gen/1M/main.mkv", "type=video%2Fx-matroska", `e2e-film-${t.name}.mkv`],
+    ]) {
+      await t.session.navigate(`${LAB}/page?link=none`);
+      await t.session.navigate(`${LAB}${at}?${query}&cd=${encodeURIComponent(file)}`, { download: true });
+      await arrived(file, 1 << 20, "Video", 20000);
+      await keptNothing(t.dl);
+      done.push(`${at.split("/").pop()} (${query.split("=")[0]}) as ${file}`);
+    }
+    const wrong = fs.readdirSync(path.join(downloads, "Video")).filter((f) => /^main( \(\d+\))?\.(mp4|mkv)$/.test(f));
+    if (wrong.length) throw new Error(`saved under the address's name too: ${wrong.join(", ")}`);
+    return done.join(", ");
+  },
+
+  // The video button on a page whose Content-Security-Policy allows no inline style.
+  async csp(t) {
+    await t.session.navigate(`${LAB}/page?csp=strict`);
+    const v = await rect(t.session, "#video");
+    const b = await hover(t.session, v);
+    if (!b) throw new Error("no button over the video under csp=strict");
+    near(b.b - b.t, 30, "the button's height");
+    const pill = await t.session.pill();
+    if (!pill) throw new Error("the button's pill wasn't found");
+    if (Math.abs(pill.h - 30) > 2 || !/linear-gradient/.test(pill.image)) throw new Error(`the tab isn't styled: ${JSON.stringify(pill)}`);
+    const address = await clickButton(t.session, b);
+    const want = `${LAB}/gen/1M/clip.mp4?inline=1`;
+    if (address !== want) throw new Error(`the video window got ${address}, not ${want}`);
+    return `styled (${Math.round(pill.h)}px, ${pill.image.slice(0, 15)}...), sent ${address.replace(LAB, "")}`;
+  },
+
+  // The button doesn't sit on a control of the page (#421: a thumbnail's watch-later button at
+  // the top right): it moves to a free corner.
+  async spot(t) {
+    // E2E_SPOT_SHOT: a screenshot of the page with the button shown, for a PR's body.
+    const shoot = async () => {
+      if (process.env.E2E_SPOT_SHOT && t.session.screenshot) await t.session.screenshot(process.env.E2E_SPOT_SHOT);
+    };
+    await t.session.navigate(`${LAB}/page?video=${encodeURIComponent("/gen/1M/clip.mp4")}`);
+    await t.session.evaluate(`(() => {
+      const r = document.querySelector("#video").getBoundingClientRect();
+      const c = document.createElement("button");
+      c.id = "page-control";
+      c.textContent = "x";
+      c.style.cssText = "position:fixed;left:" + (r.right - 44) + "px;top:" + (r.top + 4) + "px;width:40px;height:40px;z-index:9";
+      document.body.appendChild(c);
+      return true;
+    })()`);
+    const v = await rect(t.session, "#video");
+    const b = await hover(t.session, v);
+    if (!b) throw new Error("no button over the video");
+    await shoot();
+    const c = await rect(t.session, "#page-control");
+    const overlaps = b.l < c.r && b.r > c.l && b.t < c.b && b.b > c.t;
+    if (overlaps) throw new Error(`the button covers the page's control: ${JSON.stringify({ b, c })}`);
+    return `at ${Math.round(b.l - v.l)},${Math.round(b.t - v.t)}, clear of the page's control`;
+  },
+
+  // #503: a hover-to-play preview (YouTube's thumbnails) stops as soon as the pointer leaves the
+  // video for the button, the page seeing the pointer go: hidden, or taken out of the page. The
+  // button stays where it was while the pointer is on it, a click sends the video it was over,
+  // and it fades once the pointer leaves.
+  async preview(t) {
+    // E2E_PREVIEW_SHOT: screenshots of the page with the preview stopped, for a PR's body.
+    const shoot = async (name) => {
+      if (process.env.E2E_PREVIEW_SHOT && t.session.screenshot) await t.session.screenshot(`${process.env.E2E_PREVIEW_SHOT}-${name}.png`);
+    };
+    const done = [];
+    for (const stop of ["hidden", "removed"]) {
+      await t.session.navigate(`${LAB}/page?video=${encodeURIComponent("/gen/1M/clip.mp4")}`);
+      await t.session.evaluate(`(() => {
+        const v = document.querySelector("#video");
+        v.addEventListener("mouseleave", () => {
+          if (${JSON.stringify(stop)} === "hidden") v.style.display = "none"; else v.remove();
+          document.body.dataset.preview = "stopped";
+        });
+        return true;
+      })()`);
+      const v = await rect(t.session, "#video");
+      const b = await hover(t.session, v);
+      if (!b) throw new Error(`${stop}: no button over the video`);
+      // Onto the button: the page stops its preview.
+      await t.session.mouse(b.l + 14, (b.t + b.b) / 2);
+      await until(`${stop}: the page's preview stopped`, 3000, () => t.session.evaluate(`document.body.dataset.preview === "stopped"`));
+      await sleep(500);
+      await shoot(stop);
+      const kept = await rect(t.session, "mdm-video-button");
+      if (!kept) throw new Error(`${stop}: the button went with the preview`);
+      near(kept.l, b.l, `${stop}: kept, left edge`);
+      near(kept.t, b.t, `${stop}: kept, top`);
+      // Still there with the pointer resting on it, past the time the pointer is given to reach it.
+      await sleep(2000);
+      if (!(await rect(t.session, "mdm-video-button"))) throw new Error(`${stop}: the button went while the pointer rested on it`);
+      const address = await clickButton(t.session, kept);
+      if (address !== `${LAB}/gen/1M/clip.mp4`) throw new Error(`${stop}: the video window got ${address}`);
+      // The pointer leaves: it fades, as over any video.
+      await t.session.mouse(5, 5);
+      await until(`${stop}: the button gone after the pointer left`, 6000, async () => !(await rect(t.session, "mdm-video-button")));
+      done.push(`${stop}: kept, sent ${address.replace(LAB, "")}, gone after`);
+    }
+    return done.join("; ");
+  },
+
+  // #560: YouTube's thumbnail previews grow while the pointer is over them and show their own
+  // sound button at the top right, and shrink back and hide it once the pointer leaves for the
+  // button. The button keeps one place as the pointer goes to it and rests on it, and a click
+  // sends the video.
+  async steady(t) {
+    await t.session.navigate(`${LAB}/page?video=${encodeURIComponent("/gen/1M/clip.mp4")}`);
+    await t.session.evaluate(`(() => {
+      const v = document.querySelector("#video");
+      v.style.transition = "transform 150ms linear";
+      let timer = 0;
+      v.addEventListener("mouseenter", () => {
+        v.style.transform = "scale(1.08)";
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          const r = v.getBoundingClientRect();
+          const c = document.createElement("button");
+          c.id = "preview-sound";
+          c.textContent = "sound";
+          c.style.cssText = "position:fixed;left:" + (r.right - 48) + "px;top:" + (r.top + 6) + "px;width:40px;height:40px;z-index:9";
+          document.body.appendChild(c);
+        }, 300);
+      });
+      v.addEventListener("mouseleave", () => {
+        clearTimeout(timer);
+        v.style.transform = "";
+        document.getElementById("preview-sound")?.remove();
+        document.body.dataset.left = String(Number(document.body.dataset.left || 0) + 1);
+      });
+      return true;
+    })()`);
+    const v0 = await rect(t.session, "#video");
+    const first = await hover(t.session, v0);
+    if (!first) throw new Error("no button over the preview");
+    // The preview grown, its sound button shown: the button takes a free corner.
+    await until("the preview's sound button", 3000, () => t.session.evaluate(`Boolean(document.getElementById("preview-sound"))`));
+    await sleep(900);
+    const c = await rect(t.session, "#preview-sound");
+    const b = await rect(t.session, "mdm-video-button");
+    if (!b) throw new Error("the button went as the preview started");
+    if (b.l < c.r && b.r > c.l && b.t < c.b && b.b > c.t) throw new Error(`the button covers the preview's sound button: ${JSON.stringify({ b, c })}`);
+    // The pointer goes to it in steps, then rests on it: the page shrinks the preview and hides
+    // its sound button. Where the button is, every step and every 100 ms while it rests.
+    const v = await rect(t.session, "#video");
+    const from = [(v.l + v.r) / 2, (v.t + v.b) / 2];
+    const to = [b.l + 14, (b.t + b.b) / 2];
+    const seen = [];
+    const at = async (what) => {
+      const r = await rect(t.session, "mdm-video-button");
+      seen.push(r ? `${what} ${Math.round(r.l)},${Math.round(r.t)}` : `${what} gone`);
+      return r;
+    };
+    for (let i = 1; i <= 8; i++) {
+      await t.session.mouse(from[0] + ((to[0] - from[0]) * i) / 8, from[1] + ((to[1] - from[1]) * i) / 8);
+      await sleep(60);
+      await at(`step ${i}`);
+    }
+    await until("the page saw the pointer leave the preview", 3000, () => t.session.evaluate(`Number(document.body.dataset.left || 0) > 0`));
+    const landed = await at("on it");
+    for (let i = 0; i < 25; i++) {
+      await sleep(100);
+      await at(`rest ${i}`);
+    }
+    // E2E_STEADY_SHOT: a screenshot after the pointer rested on it, for a PR's body.
+    if (process.env.E2E_STEADY_SHOT && t.session.screenshot) await t.session.screenshot(process.env.E2E_STEADY_SHOT);
+    const moved = seen.filter((x) => {
+      const m = /(-?\d+),(-?\d+)$/.exec(x);
+      return !m || !landed || Math.abs(m[1] - landed.l) > 2 || Math.abs(m[2] - landed.t) > 2;
+    });
+    if (!landed || moved.length) throw new Error(`the button moved: ${seen.join("; ")} (landed at ${landed ? `${Math.round(landed.l)},${Math.round(landed.t)}` : "none"})`);
+    const address = await clickButton(t.session, landed);
+    if (address !== `${LAB}/gen/1M/clip.mp4`) throw new Error(`the video window got ${address}`);
+    await t.session.mouse(5, 5);
+    return `${Math.abs(first.l - b.l) > 2 || Math.abs(first.t - b.t) > 2 ? "moved" : "stayed"} off the preview's sound button, at ${Math.round(b.l - v.l)},${Math.round(b.t - v.t)}; then still for ${seen.length} looks (8 steps there, 2.5 s on it while the preview shrank and hid its button), sent ${address.replace(LAB, "")}`;
+  },
+
+  // #1271: YouTube's own hover preview, as its home page has it. The preview plays in a player
+  // of its own (.html5-video-player) inside the card's link, and stops as the pointer leaves the
+  // thumbnail for the button: YouTube hides it in a container of no size. Its main player sits
+  // under the page with no box (at the window's corner), still holding the video watched last.
+  // A sample page served at www.youtube.com (nothing from YouTube itself), both players
+  // answering as YouTube's do (getVideoData). The button stays while the pointer is on it, and a
+  // click sends the preview's video, never the one watched last.
+  async ytpreview(t) {
+    const PREVIEW = "mdmPreview1";
+    const WATCHED = "mdmWatched1";
+    const html = `<!doctype html><meta charset="utf-8"><title>YouTube</title>
+<style>body{margin:0;font:14px sans-serif}#player{display:none}.card{position:absolute;left:120px;top:100px;width:480px}
+.thumb{display:block;position:relative;width:480px;height:270px;border-radius:12px;overflow:hidden;background:linear-gradient(135deg,#3b6ea5,#a7c7e7)}
+.preview{position:absolute;inset:0}.preview.off{display:none}video{display:block;width:100%;height:100%;background:#0b1e33}</style>
+<div id="player"><div id="movie_player" class="html5-video-player"><video></video></div></div>
+<div class="card"><a class="thumb" href="/watch?v=${PREVIEW}"><div class="preview off"><div id="inline-preview-player" class="html5-video-player"><video muted></video></div></div></a>
+<p><a href="/watch?v=${PREVIEW}">A test clip</a></p></div>
+<script>
+document.getElementById("movie_player").getVideoData = () => ({ video_id: "${WATCHED}" });
+document.getElementById("inline-preview-player").getVideoData = () => ({ video_id: "${PREVIEW}" });
+const thumb = document.querySelector(".thumb");
+const preview = document.querySelector(".preview");
+thumb.addEventListener("mouseenter", () => { preview.classList.remove("off"); document.body.dataset.preview = "playing"; });
+thumb.addEventListener("mouseleave", () => { preview.classList.add("off"); document.body.dataset.preview = "stopped"; });
+</script>`;
+    await t.session.serve(["www.youtube.com"], (url) =>
+      new URL(url).pathname === "/" ? { status: 200, type: "text/html; charset=utf-8", body: html } : { status: 404, type: "text/plain", body: "not a sample page" },
+    );
+    await t.session.navigate("https://www.youtube.com/");
+    const thumb = await rect(t.session, ".thumb");
+    const b = await hover(t.session, thumb);
+    if (!b) throw new Error("no button over the preview");
+    // Onto the button: YouTube stops its preview.
+    await t.session.mouse(b.l + 14, (b.t + b.b) / 2);
+    await until("the page's preview stopped", 3000, () => t.session.evaluate(`document.body.dataset.preview === "stopped"`));
+    await sleep(2000);
+    // E2E_YTPREVIEW_SHOT: a folder for a PR's pictures: the page with the preview stopped and the
+    // pointer on the button, and the Download video window the click opened.
+    const shots = process.env.E2E_YTPREVIEW_SHOT || "";
+    if (shots) fs.mkdirSync(shots, { recursive: true });
+    if (shots && t.session.screenshot) await t.session.screenshot(path.join(shots, `${t.name}-page.png`));
+    const kept = await rect(t.session, "mdm-video-button");
+    if (!kept) throw new Error("the button went with the preview");
+    // Where it was: at the thumbnail's top right, its end against the edge (its grip, shown
+    // under the pointer, widens it to the left).
+    near(kept.r, b.r, "kept, right edge");
+    near(kept.t, b.t, "kept, top");
+    const address = await clickButton(t.session, kept, shots && path.join(shots, `${t.name}-window.png`));
+    if (address === `https://www.youtube.com/watch?v=${WATCHED}`) throw new Error("the video window got the video watched last, not the preview's");
+    if (address !== `https://www.youtube.com/watch?v=${PREVIEW}`) throw new Error(`the video window got ${address}`);
+    await t.session.mouse(5, 5);
+    await until("the button gone after the pointer left", 6000, async () => !(await rect(t.session, "mdm-video-button")));
+    return `kept over the stopped preview, sent watch?v=${PREVIEW} (not the main player's ${WATCHED}), gone after`;
+  },
+
+  // #899: a site's player shows its own settings button at the top right while the pointer moves
+  // over the player, and hides it a moment after the pointer stops or leaves the player (for the
+  // button, which is no part of it). The button takes a free corner once, and stays there as the
+  // pointer goes to it, rests on it, goes back over the video and stops: it never hops back to
+  // the corner the settings button hid from (0.5.2 did, every time it came and went).
+  async player(t) {
+    await t.session.navigate(`${LAB}/page?video=${encodeURIComponent("/gen/1M/clip.mp4")}`);
+    await t.session.evaluate(`(() => {
+      const v = document.querySelector("#video");
+      const box = document.createElement("div");
+      box.id = "player-box";
+      box.style.cssText = "position:relative;display:inline-block;background:#111";
+      v.replaceWith(box);
+      box.appendChild(v);
+      const gear = document.createElement("button");
+      gear.id = "player-settings";
+      gear.textContent = "settings";
+      gear.style.cssText = "position:absolute;right:8px;top:8px;width:44px;height:36px;z-index:2;display:none";
+      box.appendChild(gear);
+      let idle = 0;
+      const hide = (ms) => {
+        clearTimeout(idle);
+        idle = setTimeout(() => { gear.style.display = "none"; document.body.dataset.hidden = String(Number(document.body.dataset.hidden || 0) + 1); }, ms);
+      };
+      box.addEventListener("mousemove", () => { gear.style.display = "block"; hide(1200); });
+      box.addEventListener("mouseleave", () => hide(250));
+      return true;
+    })()`);
+    const v = await rect(t.session, "#video");
+    const mid = [(v.l + v.r) / 2, (v.t + v.b) / 2];
+    const seen = [];
+    const side = (r) => (r ? ((r.l + r.r) / 2 > mid[0] ? "right" : "left") : "gone");
+    const look = async (what) => {
+      const r = await rect(t.session, "mdm-video-button");
+      seen.push(`${what} ${side(r)}${r ? ` ${Math.round(r.l)},${Math.round(r.t)}` : ""}`);
+      return r;
+    };
+    const glide = async (from, to, steps, what) => {
+      for (let i = 1; i <= steps; i++) {
+        await t.session.mouse(from[0] + ((to[0] - from[0]) * i) / steps, from[1] + ((to[1] - from[1]) * i) / steps);
+        await sleep(60);
+        await look(`${what} ${i}`);
+      }
+    };
+    const rest = async (ms, what) => {
+      for (let n = 0; n < ms / 100; n++) {
+        await sleep(100);
+        await look(`${what} ${n}`);
+      }
+    };
+    // Over the player: its settings button shows, the button shows clear of it.
+    const first = await hover(t.session, v);
+    if (!first) throw new Error("no button over the player");
+    await until("the player's settings button", 3000, () => t.session.evaluate(`document.getElementById("player-settings").style.display === "block"`));
+    await sleep(900);
+    const b = await look("shown");
+    const gear = await rect(t.session, "#player-settings");
+    if (!b) throw new Error("the button went as the player's controls showed");
+    if (gear && b.l < gear.r && b.r > gear.l && b.t < gear.b && b.b > gear.t) throw new Error(`the button covers the player's settings button: ${JSON.stringify({ b, gear })}`);
+    // To the button, and resting on it: the player hides its settings button.
+    const on = [b.l + 14, (b.t + b.b) / 2];
+    await glide(mid, on, 8, "to it");
+    await rest(2000, "on it");
+    // Back over the video, still there while the player's controls show and hide again.
+    await glide(on, mid, 8, "back");
+    await rest(2500, "still");
+    await t.session.mouse(mid[0] + 20, mid[1] + 10);
+    await rest(800, "moved");
+    // And to it again.
+    await glide([mid[0] + 20, mid[1] + 10], on, 8, "again");
+    await rest(1500, "on it again");
+    const hid = await t.session.evaluate("Number(document.body.dataset.hidden || 0)");
+    if (hid < 2) throw new Error(`the player's settings button hid ${hid} time(s): the test's player didn't behave as the issue's`);
+    const sides = seen.map((x) => x.split(" ").find((w) => ["left", "right", "gone"].includes(w)));
+    const flips = sides.filter((x, i) => i > 0 && x !== "gone" && sides[i - 1] !== "gone" && x !== sides[i - 1]).length;
+    // Gone a moment is fine: it fades while the pointer rests still over the video (#480).
+    const kept = seen.filter((x) => !x.includes(side(b)) && !x.endsWith(" gone"));
+    if (flips || kept.length) throw new Error(`the button hopped (${flips} times): ${seen.join("; ")}`);
+    await t.session.mouse(5, 5);
+    return `took the ${side(b)} corner clear of the player's settings button, then kept it for ${seen.length} looks (to it, on it, back over the video, still, moved, on it again) while the player hid its settings button ${hid} times`;
+  },
+
+  // #1582: Bilibili's player, as its video pages have it (built here, nothing from Bilibili). A
+  // top bar over the video holds a feedback button at the top right, 14 px from the edge (under
+  // the end of the button's default spot, between its corners), and a control bar holds buttons
+  // at both bottom corners; both show while the pointer moves over the player and hide a moment
+  // after it stops or as it leaves the player, for the button, which is no part of it. 0.5.2 went
+  // to the free top left, then back to the top right as the pointer reached it and the top bar
+  // hid, and away again when it came back: it dodged the pointer. The button takes the top left
+  // (not over the feedback button) and keeps it as the pointer goes to it, rests on it, goes
+  // back over the video and comes again; a click sends the video.
+  async bilibili(t) {
+    await t.session.navigate(`${LAB}/page?w=800&h=450&video=${encodeURIComponent("/gen/1M/clip.mp4")}`);
+    await t.session.evaluate(`(() => {
+      const v = document.querySelector("#video");
+      const box = document.createElement("div");
+      box.id = "bpx-player";
+      box.style.cssText = "position:relative;display:inline-block;background:#000;line-height:0";
+      v.replaceWith(box);
+      box.appendChild(v);
+      const overlay = (css) => {
+        const d = document.createElement("div");
+        d.style.cssText = "position:absolute;left:0;right:0;pointer-events:none;opacity:0;visibility:hidden;" + css;
+        box.appendChild(d);
+        return d;
+      };
+      const top = overlay("top:0;height:120px;background:linear-gradient(#0008,#0000);z-index:2");
+      const issue = document.createElement("span");
+      issue.id = "player-feedback";
+      issue.textContent = "?";
+      issue.style.cssText = "position:absolute;right:14px;top:18px;width:54px;height:24px;cursor:pointer;pointer-events:all;color:#fff;font:16px/24px sans-serif;text-align:center";
+      top.appendChild(issue);
+      const bar = overlay("bottom:0;height:48px;background:#0009;z-index:2;display:flex;justify-content:space-between;align-items:center");
+      for (const name of ["play", "fullscreen"]) {
+        const b = document.createElement("button");
+        b.id = "player-" + name;
+        b.textContent = name;
+        b.style.cssText = "pointer-events:all;width:200px;height:40px;margin:0 8px";
+        bar.appendChild(b);
+      }
+      let idle = 0;
+      const show = (on) => {
+        for (const d of [top, bar]) {
+          d.style.opacity = on ? "1" : "0";
+          d.style.visibility = on ? "visible" : "hidden";
+        }
+        if (!on) document.body.dataset.hidden = String(Number(document.body.dataset.hidden || 0) + 1);
+      };
+      box.addEventListener("mousemove", () => {
+        show(true);
+        clearTimeout(idle);
+        idle = setTimeout(() => show(false), 1500);
+      });
+      box.addEventListener("mouseleave", () => {
+        clearTimeout(idle);
+        show(false);
+      });
+      return true;
+    })()`);
+    const v = await rect(t.session, "#video");
+    const mid = [(v.l + v.r) / 2, (v.t + v.b) / 2];
+    const seen = [];
+    let covered = 0;
+    const side = (r) => (r ? `${(r.l + r.r) / 2 > mid[0] ? "right" : "left"}-${(r.t + r.b) / 2 > mid[1] ? "bottom" : "top"}` : "gone");
+    const look = async (what) => {
+      const r = await rect(t.session, "mdm-video-button");
+      const f = await t.session.evaluate(`(() => { const e = document.getElementById("player-feedback"); const r = e.getBoundingClientRect();
+        return getComputedStyle(e.parentElement).opacity > 0.5 ? { l: r.left, t: r.top, r: r.right, b: r.bottom } : null; })()`);
+      if (r && f && r.l < f.r && r.r > f.l && r.t < f.b && r.b > f.t) covered += 1;
+      seen.push(`${what} ${side(r)}${r ? ` ${Math.round(r.l)},${Math.round(r.t)}` : ""}`);
+      return r;
+    };
+    const glide = async (from, to, steps, what) => {
+      for (let i = 1; i <= steps; i++) {
+        await t.session.mouse(from[0] + ((to[0] - from[0]) * i) / steps, from[1] + ((to[1] - from[1]) * i) / steps);
+        await sleep(60);
+        await look(`${what} ${i}`);
+      }
+    };
+    const rest = async (ms, what) => {
+      for (let n = 0; n < ms / 100; n++) {
+        await sleep(100);
+        await look(`${what} ${n}`);
+      }
+    };
+    const first = await hover(t.session, v);
+    if (!first) throw new Error("no button over the player");
+    await until("the player's top bar", 5000, () => t.session.evaluate(`getComputedStyle(document.getElementById("player-feedback").parentElement).opacity === "1"`));
+    // The pointer moves on a little over the video (the button fades 1.5 s after it rests, #480),
+    // and the button has had its time (400 ms) to look again at the spot it took.
+    await t.session.mouse(mid[0] + 3, mid[1] + 2);
+    await sleep(600);
+    const b = await look("shown");
+    if (!b) throw new Error("the button went as the player's bars showed");
+    if (covered) throw new Error(`the button covers the player's feedback button: ${seen.join("; ")}`);
+    if (side(b) !== "left-top") throw new Error(`the button took the ${side(b)} corner (the top left is the free one)`);
+    // To the button (out of the player): the player hides its bars. Resting on it, back over the
+    // video (the bars show again), still, and to it again.
+    const on = [b.l + 14, (b.t + b.b) / 2];
+    await glide(mid, on, 10, "to it");
+    await rest(2000, "on it");
+    await glide(on, mid, 8, "back");
+    await rest(1000, "over the video");
+    await t.session.mouse(mid[0] + 20, mid[1] + 10);
+    await rest(500, "moved");
+    await glide([mid[0] + 20, mid[1] + 10], on, 10, "again");
+    await rest(1500, "on it again");
+    const hid = await t.session.evaluate("Number(document.body.dataset.hidden || 0)");
+    if (hid < 2) throw new Error(`the player hid its bars ${hid} time(s): the test's player didn't behave as Bilibili's`);
+    // Gone a moment is fine: it fades while the pointer rests still over the video (#480).
+    const away = seen.filter((x) => !x.includes(side(b)) && !x.includes(" gone"));
+    if (away.length || covered) throw new Error(`the button moved or covered the feedback button (${covered}): ${seen.join("; ")}`);
+    const landed = await rect(t.session, "mdm-video-button");
+    if (!landed) throw new Error("no button under the pointer at the end");
+    near(landed.l, b.l, "kept, left edge");
+    near(landed.t, b.t, "kept, top");
+    // E2E_BILIBILI_SHOT: a picture of the page with the pointer on the button, for a PR's body.
+    if (process.env.E2E_BILIBILI_SHOT && t.session.screenshot) await t.session.screenshot(process.env.E2E_BILIBILI_SHOT);
+    const address = await clickButton(t.session, landed);
+    if (address !== `${LAB}/gen/1M/clip.mp4`) throw new Error(`the video window got ${address}`);
+    await t.session.mouse(5, 5);
+    return `took the top left, clear of the player's feedback button, and kept it for ${seen.length} looks (to it, on it, back over the video, moved, on it again) while the player hid its bars ${hid} times; sent ${address.replace(LAB, "")}`;
+  },
+
+  // A player playing a stream (a blob: in the page): the button sends the manifest it loaded.
+  async hls(t) {
+    await t.session.navigate(`${LAB}/page?hls=1`);
+    const state = await until("the stream player", 15000, () => t.session.evaluate("document.body.dataset.stream || ''"));
+    if (state !== "done") throw new Error(`the page's player: ${state}`);
+    const v = await rect(t.session, "#player");
+    const b = await hover(t.session, v);
+    if (!b) throw new Error("no button over the stream's player");
+    const address = await clickButton(t.session, b);
+    const want = `${LAB}/hls/master.m3u8`;
+    if (address !== want) throw new Error(`the video window got ${address}, not ${want}`);
+    return `sent ${address.replace(LAB, "")}`;
+  },
+
+  // #155: an HLS or DASH player (playing from a blob:) handed to MDM, by the button over it, the
+  // right-click menu and the toolbar button's media list: yt-dlp gets the stream's manifest, with
+  // the cookie and the page as referrer, and reads it. Needs a yt-dlp (E2E_YTDLP, else one on
+  // PATH): the test instance uses it as the person's own copy (Helpers).
+  async streams(t) {
+    if (!ytdlp) throw new Skip("no yt-dlp (E2E_YTDLP or PATH)");
+    const cookie = `sid155=${t.name}`;
+    await t.session.navigate(`${LAB}/cookie?set=${encodeURIComponent(cookie)}`);
+    const done = [];
+    // Each path's failure names it.
+    const named = async (what, f) => {
+      try {
+        return `${what}: ${await f()}`;
+      } catch (e) {
+        e.message = `${what}: ${e.message}${done.length ? ` (passed: ${done.join("; ")})` : ""}`;
+        throw e;
+      }
+    };
+    // #171: the same with no .m3u8 or .mpd and served as text/plain or octet-stream, after a
+    // text answer that is no manifest (the player's settings, never sent).
+    const kinds = [
+      ["hls", "/hls/master.m3u8"],
+      ["dash", "/dash/manifest.mpd"],
+      ["hls2", "/hls2/playlist?id=lab"],
+      ["dash2", "/dash2/manifest?id=lab"],
+    ];
+    for (const [kind, manifest] of kinds) {
+      await t.session.navigate(`${LAB}/page?${kind}=1`);
+      const state = await until("the stream player", 15000, () => t.session.evaluate("document.body.dataset.stream || ''"));
+      if (state !== "done") throw new Error(`the page's ${kind} player: ${state}`);
+      const page = await t.session.evaluate("location.href");
+      const v = await rect(t.session, "#player");
+      // The button over the player: its menu, then "All qualities and subtitles…" (openInMdm).
+      done.push(await named(`${kind} button`, () => streamLookedUp(async () => {
+        const b = await hover(t.session, v);
+        if (!b) throw new Error("no button over the stream's player");
+        await openInMdm(t.session, appPid());
+      }, manifest, page, cookie)));
+      // The right-click menu on the player (Firefox: its menu can be driven headless).
+      if (t.session.menu) {
+        done.push(await named(`${kind} menu`, () => streamLookedUp(async () => {
+          const r = await t.session.menu((v.l + v.r) / 2, (v.t + v.b) / 2, "Download with Mister Download Manager");
+          if (!String(r).startsWith("chosen")) throw new Error(`the right-click menu: ${r}`);
+          if (process.env.E2E_DEBUG) console.error("menu:", r);
+        }, manifest, page, cookie)));
+      }
+      // The toolbar button's media list.
+      const popup = await t.session.tab(`${t.session.base}popup.html?page=${encodeURIComponent(page)}`);
+      try {
+        const name = manifest.split("?")[0].split("/").pop();
+        await until("the popup's media list", 15000, () =>
+          popup.evaluate(`[...document.querySelectorAll("#media-list li")].some((li) => li.querySelector(".name").textContent === ${JSON.stringify(name)} && li.querySelector("button"))`),
+        );
+        done.push(await named(`${kind} list`, () => streamLookedUp(
+          () => popup.evaluate(`(() => { const li = [...document.querySelectorAll("#media-list li")].find((x) => x.querySelector(".name").textContent === ${JSON.stringify(name)}); li.querySelector("button").click(); return true; })()`),
+          manifest,
+          page,
+          cookie,
+        )));
+      } finally {
+        await popup.close();
+      }
+    }
+    if (!t.session.menu) done.push("right-click menu: not drivable in Chromium (tools/extension/test.mjs)");
+    return done.join("; ");
+  },
+
+  // #171: a page whose players load streams with no .m3u8 or .mpd in any address, served as
+  // text/plain (HLS) and application/octet-stream (DASH), each after a text answer that is no
+  // manifest. Nothing is read while the page plays; the button over the player sends the HLS
+  // master; the media list shows the two streams with their qualities, and nothing else.
+  async sniffed(t) {
+    const play = async (q) => {
+      await clearLog();
+      await t.session.navigate(`${LAB}/page?${q}`);
+      const state = await until("the stream players", 20000, () => t.session.evaluate("document.body.dataset.stream || ''"));
+      if (state !== "done") throw new Error(`the page's players: ${state}`);
+      return t.session.evaluate("location.href");
+    };
+    const masters = async () => (await (await fetch(`${LAB}/_log`)).json()).filter((x) => x.path === "/hls2/playlist" && x.query === "id=lab");
+    // The HLS player alone (two players race: either manifest could come first).
+    await play("hls2=1");
+    await sleep(500);
+    const before = (await masters()).length;
+    if (before !== 1) throw new Error(`the master was asked for ${before} times while the page played (the player's once)`);
+    // The button over the HLS player: no stream known, the frame's possible manifests are read.
+    const v = await rect(t.session, "#player");
+    const b = await hover(t.session, v);
+    if (!b) throw new Error("no button over the stream's player");
+    const address = await clickButton(t.session, b);
+    const want = `${LAB}/hls2/playlist?id=lab`;
+    if (address !== want) throw new Error(`the video window got ${address}, not ${want}`);
+    const read = (await masters()).length - before;
+    // The media list, on the page played again (nothing known yet).
+    const page = await play("hls2=1&dash2=1");
+    const popup = await t.session.tab(`${t.session.base}popup.html?page=${encodeURIComponent(page)}`);
+    try {
+      const rows = () =>
+        popup.evaluate(`[...document.querySelectorAll("#media-list li")].map((li) => ({
+          tag: li.querySelector(".tag").textContent, name: li.querySelector(".name").textContent,
+          meta: li.querySelector(".meta").textContent, get: Boolean(li.querySelector("button")) }))`);
+      await until("the popup's media list", 15000, async () => (await rows().catch(() => [])).length >= 2);
+      await sleep(500);
+      const all = await rows();
+      const want = [
+        ["HLS", "playlist", "720p · 360p"],
+        ["DASH", "manifest", "720p · 360p · 0:12"],
+      ];
+      for (const [tag, name, meta] of want) {
+        const r = all.find((x) => x.tag === tag && x.name === name);
+        if (!r) throw new Error(`not listed: ${tag} ${name} (the list: ${JSON.stringify(all)})`);
+        if (!r.meta.startsWith(meta) || !r.get) throw new Error(`${name}: ${JSON.stringify(r)}, not "${meta}" with a Download button`);
+      }
+      if (all.length !== want.length) throw new Error(`${all.length} rows, not ${want.length}: ${JSON.stringify(all)}`);
+      await keptNothing(t.dl);
+      return `nothing read while playing; the button sent ${address.replace(LAB, "")} (then the master was asked for ${read} more times, the extension's read among them); listed ${all.map((r) => `${r.tag} ${r.name} (${r.meta})`).join(", ")}, not the settings`;
+    } finally {
+      await popup.close();
+    }
+  },
+
+  // #38: the toolbar button's list of what the tab loaded. A page plays a video file (behind a
+  // cookie and hotlink protection), a sound, an HLS stream, a DASH stream and a DRM-protected
+  // one; the popup (its page, in a tab of its own) lists the five, each stream once with its
+  // qualities, the protected one without a Download button. The file downloads in MDM with the
+  // page's cookies and referrer; each stream opens the Download video window for its manifest.
+  async media(t) {
+    await t.session.navigate(`${LAB}/cookie?set=msid=7`);
+    const file = `e2e-media-${t.name}.mp4`;
+    const guarded = `/gen/1M/${file}?inline=1&require_cookie=msid%3D7&require_referer=${encodeURIComponent(`${LAB}/page`)}`;
+    await t.session.navigate(`${LAB}/page?video=${encodeURIComponent(guarded)}&audio=1&hls=1&dash=1&drm=1`);
+    const state = await until("the stream players", 20000, () => t.session.evaluate("document.body.dataset.stream || ''"));
+    if (state !== "done") throw new Error(`the page's players: ${state}`);
+    const page = await t.session.evaluate("location.href");
+    const popup = await t.session.tab(`${t.session.base}popup.html?page=${encodeURIComponent(page)}`);
+    try {
+      const rows = () =>
+        popup.evaluate(`[...document.querySelectorAll("#media-list li")].map((li) => ({
+          tag: li.querySelector(".tag").textContent, name: li.querySelector(".name").textContent,
+          meta: li.querySelector(".meta").textContent, get: Boolean(li.querySelector("button")),
+          drm: Boolean(li.querySelector(".drm")) }))`);
+      const list = await until("the popup's media list", 15000, async () => {
+        const r = await rows().catch(() => []);
+        return r.length >= 5 && r;
+      });
+      await sleep(500);
+      const all = await rows();
+      const want = [
+        ["HLS", "master.m3u8", "720p · 360p", true],
+        ["DASH", "manifest.mpd", "720p · 360p · 0:12", true],
+        ["DASH", "protected.mpd", "", false],
+        ["MP4", file, "", true],
+        ["MP3", "sound.mp3", "", true],
+      ];
+      const found = (tag, name) => all.find((r) => r.tag === tag && r.name === name);
+      for (const [tag, name, meta, get] of want) {
+        const r = found(tag, name);
+        if (!r) throw new Error(`not listed: ${tag} ${name} (the list: ${JSON.stringify(all)})`);
+        if (meta && !r.meta.startsWith(meta)) throw new Error(`${name}: "${r.meta}", not "${meta}"`);
+        if (r.get !== get || r.drm === get) throw new Error(`${name}: ${get ? "no Download button" : "not shown as protected"} (${JSON.stringify(r)})`);
+      }
+      if (all.length !== want.length) throw new Error(`${all.length} rows, not ${want.length}: ${JSON.stringify(all)}`);
+      void list;
+      const click = (name) =>
+        popup.evaluate(`(() => { const li = [...document.querySelectorAll("#media-list li")].find((x) => x.querySelector(".name").textContent === ${JSON.stringify(name)});
+          li.querySelector("button").click(); return true; })()`);
+      // The file: MDM downloads it with the page's cookie and referrer and the browser's UA.
+      await click(file);
+      await arrived(file, 1 << 20, "Video");
+      const mdm = (await requests(`/gen/1M/${file}`)).filter((e) => e.user_agent === t.ua && e.status < 400);
+      const theirs = (await requests(`/gen/1M/${file}`)).filter((e) => e.status >= 400);
+      if (theirs.length) throw new Error(`refused: ${theirs.map(brief).join("; ")}`);
+      if (!mdm.length) throw new Error("no request for the file");
+      const said = await until("the popup's word", 5000, () => popup.evaluate(`document.getElementById("media-said").textContent`));
+      if (!/Sent to Mister Download Manager/.test(said)) throw new Error(`the popup said "${said}"`);
+      // Each stream: the Download video window, for its manifest.
+      const pid = appPid();
+      const opened = [];
+      for (const name of ["master.m3u8", "manifest.mpd"]) {
+        appWindows(pid, VIDEO_WINDOW);
+        await until("the Download video window closed", 5000, () => !appWindows(pid).includes(VIDEO_WINDOW));
+        await click(name);
+        await until("the Download video window", 15000, () => appWindows(pid).includes(VIDEO_WINDOW));
+        const address = await until("the Download video window's address", 10000, () => videoAddress(pid));
+        appWindows(pid, VIDEO_WINDOW);
+        const wantAddress = `${LAB}/${name === "master.m3u8" ? "hls" : "dash"}/${name}`;
+        if (address !== wantAddress) throw new Error(`the video window got ${address}, not ${wantAddress}`);
+        opened.push(address.replace(LAB, ""));
+      }
+      await keptNothing(t.dl);
+      return `listed ${all.map((r) => `${r.tag} ${r.name}${r.drm ? " (protected)" : ""}`).join(", ")}; ${file} downloaded with the cookie and referrer; video window: ${opened.join(", ")}`;
+    } finally {
+      await popup.close();
+    }
+  },
+
+  // #404: the toolbar button's "Never take downloads from localhost" says it worked, with Undo,
+  // in a real popup: MDM lists the site (its saved Options), the popup opened again says the same,
+  // and Undo takes it off. E2E_SHOTS: <lang>-exclude-offer.png, <lang>-exclude-done.png
+  // (E2E_COLOR_SCHEME: light or dark). E2E_EXCLUDE_BEFORE=1: only the pictures, for an older
+  // popup put in the packed extension (nothing it doesn't have is asked of it).
+  async exclude(t) {
+    if (!t.session.tab || !t.session.base) throw new Skip("the popup in a tab of its own: Chromium's");
+    const shots = process.env.E2E_SHOTS ? path.resolve(process.env.E2E_SHOTS) : "";
+    const lang = process.env.E2E_LANG || "en";
+    const before = process.env.E2E_EXCLUDE_BEFORE === "1";
+    const site = "localhost";
+    const page = `http://${site}:${PORT}/page?title=${encodeURIComponent("Lab downloads")}`;
+    const listed = () => {
+      try {
+        const s = JSON.parse(fs.readFileSync(path.join(data, "downloads.json"), "utf8").replace(/^\uFEFF/, "")).settings;
+        return (s.excluded_sites || "").split(/\s+/).includes(site);
+      } catch {
+        return false;
+      }
+    };
+    if (listed()) throw new Error(`${site} is excluded already`);
+    await t.session.navigate(page);
+    const open = () => t.session.tab(`${t.session.base}popup.html?page=${encodeURIComponent(page)}`);
+    const seen = (popup) =>
+      popup.evaluate(`(() => { const v = (id) => { const e = document.getElementById(id); return e && !e.hidden && e.offsetParent !== null; };
+        const sw = document.getElementById("exclude");
+        // An older popup's button (E2E_EXCLUDE_BEFORE), or the switch (#1496): off is the offer.
+        const isSwitch = sw && sw.type === "checkbox";
+        return { offer: v("exclude") && !(isSwitch && sw.checked), offerText: isSwitch ? document.getElementById("exclude-label").textContent : sw.textContent, done: v("excluded"),
+          doneText: document.getElementById("excluded-text") ? document.getElementById("excluded-text").textContent : document.getElementById("excluded").textContent,
+          undo: isSwitch ? Boolean(sw.checked && !sw.disabled) : v("undo") }; })()`);
+    const snap = async (popup, name) => {
+      if (shots && popup.shot) await popup.shot(path.join(shots, `${lang}-${name}.png`));
+    };
+    let popup = await open();
+    try {
+      await until("the popup's offer", 10000, async () => (await seen(popup).catch(() => ({}))).offer);
+      await sleep(300);
+      await snap(popup, "exclude-offer");
+      await popup.evaluate(`document.getElementById("exclude").click(), true`);
+      await until(`${site} in MDM's excluded sites`, 10000, listed);
+      await sleep(500);
+      await snap(popup, "exclude-done");
+      if (before) return "pictures only (E2E_EXCLUDE_BEFORE)";
+      const done = await seen(popup);
+      if (done.offer || !done.done || !done.undo) throw new Error(`after the click: ${JSON.stringify(done)}`);
+      if (!done.doneText.includes(site)) throw new Error(`it says "${done.doneText}"`);
+      await popup.close();
+      // Opened again on the site: the same, not the offer.
+      popup = await open();
+      const again = await until("the popup opened again", 10000, async () => {
+        const s = await seen(popup).catch(() => ({}));
+        return (s.done || s.offer) && s;
+      });
+      if (again.offer || !again.undo) throw new Error(`opened again: ${JSON.stringify(again)}`);
+      await popup.evaluate(`(document.getElementById("undo") || document.getElementById("exclude")).click(), true`);
+      await until(`${site} off MDM's excluded sites`, 10000, () => !listed());
+      const undone = await until("the offer back", 5000, async () => {
+        const s = await seen(popup);
+        return s.offer && !s.done && s;
+      });
+      return `"${done.doneText}", switched on, also when opened again; switched off took ${site} off (the offer back: "${undone.offerText}")`;
+    } finally {
+      await popup.close();
+      // Never left listed for the next case.
+      if (listed()) await ipc({ include_site: site }).catch(() => {});
+    }
+  },
+
+  // #1613: the extension is loaded by hand here (Load unpacked in Chromium, a temporary add-on in
+  // Firefox), so its popup says it won't update itself, with a link to its browser's store:
+  // management.getSelf() answers "development", with no "management" permission.
+  // E2E_SHOTS: <browser>-<lang>-<scheme>-by-hand.png, the popup as it opens. E2E_BYHAND_BEFORE=1:
+  // only that picture (an older popup in the packed extension), for the "before" pictures.
+  async byhand(t) {
+    if (!t.session.tab || !t.session.base) throw new Skip("the popup in a tab of its own");
+    const shots = process.env.E2E_SHOTS ? path.resolve(process.env.E2E_SHOTS) : "";
+    const lang = process.env.E2E_LANG || "en";
+    const tag = `${t.name}-${lang}-${process.env.E2E_COLOR_SCHEME || "system"}`;
+    const picture = async (p, name) => {
+      if (!shots || !p.shot) return;
+      fs.mkdirSync(shots, { recursive: true });
+      await sleep(350);
+      await p.shot(path.join(shots, `${tag}-${name}.png`));
+    };
+    if (process.env.E2E_BYHAND_BEFORE === "1") {
+      const p = await t.session.tab(`${t.session.base}popup.html`);
+      try {
+        if (p.viewport) await p.viewport(400, 548);
+        await until("the popup", 10000, () => p.evaluate(`document.readyState === "complete" && Boolean(document.getElementById("status-text").textContent)`).catch(() => false));
+        await picture(p, "by-hand-before");
+        return "the popup as packed, pictured";
+      } finally {
+        await p.close();
+      }
+    }
+    const firefox = t.kind === "firefox";
+    const en = JSON.parse(fs.readFileSync(path.join(root, "extension", "_locales", "en", "messages.json"), "utf8"));
+    const want = firefox
+      ? { text: en.popup_by_hand_firefox.message, link: en.popup_store_firefox.message, href: "https://addons.mozilla.org/firefox/addon/mister-download-manager/" }
+      : { text: en.popup_by_hand.message, link: en.popup_store_chrome.message, href: "https://chromewebstore.google.com/detail/mister-download-manager/ejoleppdfgjdndddcjoehopknmlglojp" };
+    const p = await t.session.tab(`${t.session.base}popup.html`);
+    try {
+      if (p.viewport) await p.viewport(400, 548);
+      const read = `(async () => {
+        const self = await (globalThis.browser ?? chrome).management.getSelf();
+        const bar = document.getElementById("by-hand");
+        const link = document.getElementById("by-hand-store");
+        return JSON.stringify({ installType: self.installType, shown: Boolean(bar && !bar.hidden && bar.offsetHeight > 0), text: document.getElementById("by-hand-text").textContent, link: link.textContent, href: link.href });
+      })()`;
+      const got = JSON.parse(
+        await until("the popup's line for a copy loaded by hand", 10000, async () => {
+          const v = await p.evaluate(read).catch(() => "");
+          return v && JSON.parse(v).shown ? v : "";
+        }),
+      );
+      if (got.installType !== "development") throw new Error(`management.getSelf() says ${got.installType}, not development`);
+      if (got.href !== want.href) throw new Error(`the store link is ${got.href}, not ${want.href}`);
+      if (lang === "en" && (got.text !== want.text || got.link !== want.link)) throw new Error(`the line says ${JSON.stringify([got.text, got.link])}`);
+      if (!got.text || !got.link || /^popup_/.test(got.text) || /^popup_/.test(got.link)) throw new Error(`no text: ${JSON.stringify(got)}`);
+      await picture(p, "by-hand");
+      return `installType ${got.installType}: "${got.text} ${got.link}" -> ${got.href}`;
+    } finally {
+      await p.close();
+    }
+  },
+
+  // #1496: the popup's Downloads tab on this computer's MDM: a finished file, one deleted from
+  // the disk since, a running one, a failed one, each with the system's icon for its type, its
+  // state and its buttons; the toolbar button's count; search and filters; every action the app
+  // does (off the screens: open, show in folder, copy the file and share are logged by the test
+  // instance instead of shown; Copy link writes to a stand-in clipboard, never the computer's);
+  // Delete and Clear finished ask first; the arrow keys. E2E_SHOTS: <lang>-<scheme>-dl-*.png,
+  // the states and widths for a pull request. E2E_RECENT_BEFORE=1: only the popup as it is (an
+  // older popup in the packed extension), for the "before" pictures.
+  async recent(t) {
+    if (!t.session.tab || !t.session.base) throw new Skip("the popup in a tab of its own");
+    const shots = process.env.E2E_SHOTS ? path.resolve(process.env.E2E_SHOTS) : "";
+    const tag = `${process.env.E2E_LANG || "en"}-${process.env.E2E_COLOR_SCHEME || "system"}`;
+    const page = `${LAB}/page?title=${encodeURIComponent("Lab downloads")}`;
+    await t.session.navigate(page);
+    const open = async (query = "", width = 400) => {
+      const p = await t.session.tab(`${t.session.base}popup.html?keep=1${query ? `&${query}` : ""}`);
+      if (p.viewport) await p.viewport(width, 548);
+      await until("the popup", 10000, () => p.evaluate(`document.readyState === "complete" && Boolean(document.getElementById("dl-list") || document.getElementById("status"))`).catch(() => false));
+      return p;
+    };
+    const snap = async (p, name) => {
+      if (shots && p.shot) {
+        await sleep(350);
+        await p.shot(path.join(shots, `${tag}-${name}.png`));
+      }
+    };
+    if (process.env.E2E_RECENT_BEFORE === "1") {
+      const p = await open(`page=${encodeURIComponent(page)}`, 300);
+      await sleep(1500);
+      await snap(p, "popup-before");
+      await p.close();
+      return "the popup as packed, pictured";
+    }
+    const lab = (p) => `${LAB}${p}`;
+    const files = {
+      done: "quarterly-report-final.pdf",
+      gone: "holiday-photos.zip",
+      running: "linux-distro-image.iso",
+      failed: "setup-tool.exe",
+    };
+    // An empty list and no copies of these files from an earlier case or browser: the counts and
+    // names are this case's own.
+    const earlier = await mdmList();
+    if (earlier.length) {
+      await ipc({ action: "pause", ids: earlier.filter((d) => d.status === "Downloading").map((d) => d.id) }).catch(() => {});
+      await ipc({ action: "remove", ids: earlier.map((d) => d.id) });
+      await until("an empty list", 10000, async () => !(await mdmList()).length);
+    }
+    const stems = Object.values(files).map((f) => f.replace(/\.[^.]+$/, ""));
+    const sweep = (dir) => {
+      for (const e of fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }) : []) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) sweep(p);
+        else if (stems.some((stem) => e.name.startsWith(stem))) fs.rmSync(p, { force: true });
+      }
+    };
+    sweep(downloads);
+    // Through the browser (its hand-off starts the toolbar button's count), and through MDM's own
+    // channel (as from its window).
+    await clickLink(t, `/gen/2M/${files.done}`);
+    await arrived(files.done, 2 << 20, "Documents");
+    await ipc({ url: lab(`/gen/1M/${files.gone}`), silent: true });
+    const gone = await arrived(files.gone, 1 << 20);
+    fs.rmSync(gone.path, { force: true });
+    await ipc({ url: lab(`/gen/1M/${files.failed}?refuse=403&seed=${Date.now()}`), silent: true });
+    await until(`${files.failed} failed`, 30000, async () => (await mdmList()).some((d) => d.file === files.failed && d.status === "Error"));
+    await clickLink(t, `/gen/600M/${files.running}?rate=96K`);
+    await until(`${files.running} running`, 30000, async () => (await mdmList()).some((d) => d.file === files.running && d.status === "Downloading" && d.downloaded > 0));
+    await keptNothing(t.dl);
+    const byName = async () => Object.fromEntries((await mdmList()).map((d) => [d.file, d]));
+    const ids = await byName();
+    // Each by its id from here (Download again may number the file's new copy).
+    const now = async (file) => (await mdmList()).find((d) => d.id === ids[file].id);
+    const p = await open();
+    const ROWS = `JSON.stringify([...document.querySelectorAll("#dl-list li.dl")].map((li) => ({
+      id: Number(li.dataset.id), state: li.dataset.state, name: li.querySelector(".dl-name").dataset.full,
+      status: li.querySelector(".dl-status").textContent, icon: ((li.querySelector(".dl-icon img") || {}).src || "").slice(0, 22),
+      bar: li.querySelector(".dl-bar").hidden ? null : li.querySelector(".dl-bar").getAttribute("aria-valuenow"),
+      buttons: [...li.querySelectorAll("button")].filter((b) => !b.hidden).map((b) => b.className.includes("dl-name") ? "name" : b.title) })))`;
+    const rows = async () => JSON.parse(await p.evaluate(ROWS));
+    const row = async (file) => (await rows()).find((r) => r.name === file);
+    const said = () => p.evaluate(`document.getElementById("said").hidden ? "" : document.getElementById("said").textContent`);
+    const logged = (what) => {
+      try {
+        return fs.readFileSync(path.join(data, "logs", "mdm.log"), "utf8").split(/\r?\n/).filter((l) => l.includes(what));
+      } catch {
+        return [];
+      }
+    };
+    const menuOf = async (file) => {
+      await p.evaluate(`(() => { const li = document.querySelector('#dl-list li.dl[data-id="${ids[file].id}"]'); li.querySelector(".dl-more").click(); return true; })()`);
+      return JSON.parse(await p.evaluate(`JSON.stringify([...document.querySelectorAll(".menu .menu-item")].map((b) => b.dataset.act))`));
+    };
+    const choose = (act) => p.evaluate(`(document.querySelector('.menu .menu-item[data-act="${act}"]').click(), true)`);
+    const steps = [];
+    try {
+      // The four, newest first, each as it is, with its type's icon.
+      const all = await until("the four downloads in the popup", 20000, async () => {
+        const r = await rows();
+        const icons = r.filter((x) => x.icon.startsWith("data:image/")).length;
+        return r.length === 4 && icons === 4 && r;
+      }).catch(async (e) => {
+        e.message += ` (the popup: ${await p.evaluate(ROWS).catch(() => "?")})`;
+        throw e;
+      });
+      const states = Object.fromEntries(all.map((r) => [r.name, r.state]));
+      const want = { [files.done]: "done", [files.gone]: "gone", [files.running]: "running", [files.failed]: "failed" };
+      if (JSON.stringify(states) !== JSON.stringify(Object.fromEntries(Object.keys(states).map((k) => [k, want[k]])))) throw new Error(`states: ${JSON.stringify(states)}`);
+      if (all[0].name !== files.running) throw new Error(`not newest first: ${all.map((r) => r.name).join(", ")}`);
+      const running = all.find((r) => r.name === files.running);
+      if (!/ of .* left/.test(running.status) && !/·/.test(running.status)) throw new Error(`the running one says "${running.status}"`);
+      if (running.bar === null) throw new Error("the running one has no bar");
+      const counts = JSON.parse(await p.evaluate(`JSON.stringify([...document.querySelectorAll("#dl-filters .chip")].map((c) => c.querySelector(".n").textContent))`));
+      if (counts.join() !== "4,1,2,1") throw new Error(`the filters' counts: ${counts}`);
+      steps.push(`4 rows (${all.map((r) => `${r.state}: "${r.status}"`).join("; ")}), counts ${counts}`);
+      if (t.session.inExtension) {
+        const badge = await until("the toolbar's count", 10000, () => t.session.inExtension("chrome.action.getBadgeText({})").then((b) => b === "1" && b));
+        steps.push(`badge "${badge}"`);
+      }
+      await snap(p, "dl-list");
+      // The same at Firefox's overflow width, and wide.
+      for (const [w, name] of [[360, "dl-list-360"], [720, "dl-list-720"]]) {
+        const q = await open(`w=${w}`, w);
+        await until("its rows", 10000, async () => JSON.parse(await q.evaluate(`JSON.stringify(document.querySelectorAll("#dl-list li.dl").length)`)) === 4);
+        await snap(q, name);
+        await q.close();
+      }
+      // The buttons: a finished file has all; one deleted from the disk none that needs it.
+      const doneMenu = await menuOf(files.done);
+      const wantDone = ["open", "folder", "copyFile", ...(WIN || process.platform === "darwin" ? ["share"] : []), "copyLink", "again", "remove", "del"];
+      if (doneMenu.join() !== wantDone.join()) throw new Error(`a finished file's menu: ${doneMenu}`);
+      await snap(p, "dl-menu");
+      await p.evaluate(`(document.querySelector(".menu .menu-item").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), true)`);
+      const goneMenu = await menuOf(files.gone);
+      if (goneMenu.some((a) => ["open", "copyFile", "share", "del"].includes(a))) throw new Error(`a deleted file's menu: ${goneMenu}`);
+      await choose("folder");
+      steps.push(`menus: finished [${doneMenu}], deleted [${goneMenu}]`);
+      // Copy file, Share, Open, Show in folder: done by the app (logged off the screens).
+      const donePath = ids[files.done].path;
+      for (const [act, line] of [
+        ["copyFile", `clipboard (off-screen, not copied): the file ${donePath}`],
+        ["share", `share (off-screen, not shown): ${donePath}`],
+        ["open", `open (off-screen, not opened): ${donePath}`],
+        ["folder", `folder (off-screen, not opened): ${donePath}`],
+      ]) {
+        if (act === "share" && !(WIN || process.platform === "darwin")) continue;
+        await menuOf(files.done);
+        await choose(act);
+        await until(`${act} done by MDM`, 10000, () => logged(line).length > 0);
+      }
+      const copiedSaid = await until("Copy file's word", 5000, said).catch(() => "");
+      steps.push(`copy file, share, open, show in folder: done by MDM (logged); said "${copiedSaid}"`);
+      // Copy link: to a stand-in clipboard.
+      await p.evaluate(`(navigator.clipboard.writeText = async (text) => { window.__copied = text; }, true)`);
+      await menuOf(files.done);
+      await choose("copyLink");
+      const copied = await until("the link copied", 5000, () => p.evaluate("window.__copied || ''"));
+      if (copied !== ids[files.done].url) throw new Error(`copied ${copied}, not ${ids[files.done].url}`);
+      // Search and filters.
+      await p.evaluate(`(() => { const s = document.getElementById("dl-search"); s.value = "report"; s.dispatchEvent(new Event("input")); return true; })()`);
+      await until("the search", 5000, async () => (await rows()).map((r) => r.name).join() === files.done);
+      await snap(p, "dl-search");
+      await p.evaluate(`(() => { const s = document.getElementById("dl-search"); s.value = "zzz-nothing"; s.dispatchEvent(new Event("input")); return true; })()`);
+      await until("nothing matches", 5000, () => p.evaluate(`!document.getElementById("dl-empty").hidden && document.querySelectorAll("#dl-list li.dl").length === 0`));
+      await snap(p, "dl-no-match");
+      await p.evaluate(`(document.getElementById("dl-empty-act").click(), true)`);
+      await p.evaluate(`(document.querySelector('#dl-filters .chip[data-filter="failed"]').click(), true)`);
+      await until("the failed filter", 5000, async () => (await rows()).map((r) => r.name).join() === files.failed);
+      await snap(p, "dl-failed");
+      await p.evaluate(`(document.querySelector('#dl-filters .chip[data-filter="all"]').click(), true)`);
+      await until("all again", 5000, async () => (await rows()).length === 4);
+      steps.push("search, no match, the failed filter");
+      // Pause and resume the running one (its quick buttons).
+      const quick = (file, title) => p.evaluate(`(() => { const li = document.querySelector('#dl-list li.dl[data-id="${ids[file].id}"]');
+        const b = [...li.querySelectorAll(".dl-quick button")].find((x) => !x.hidden && x.title === ${JSON.stringify(title)}); b.click(); return true; })()`);
+      const titles = JSON.parse(await p.evaluate(`JSON.stringify([document.querySelector('#dl-list li.dl [data-label="popup_act_pause"]').title, document.querySelector('#dl-list li.dl [data-label="popup_act_resume"]').title])`));
+      await quick(files.running, titles[0]);
+      await until("paused in MDM", 10000, async () => ((await now(files.running)) || {}).status === "Stopped");
+      await until("paused in the popup", 5000, async () => (await row(files.running)).state === "paused");
+      await snap(p, "dl-paused");
+      await quick(files.running, titles[1]);
+      await until("resumed in MDM", 10000, async () => ((await now(files.running)) || {}).status === "Downloading");
+      steps.push("paused and resumed");
+      // The arrow keys move between the rows.
+      const keys = await p.evaluate(`(() => {
+        const first = document.querySelector("#dl-list li.dl button:not([hidden])"); first.focus();
+        first.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+        const li = document.activeElement.closest("li.dl");
+        return JSON.stringify({ moved: li && li !== first.closest("li.dl"), stops: [...document.querySelectorAll("#dl-list button")].filter((b) => b.tabIndex === 0).length });
+      })()`);
+      const k = JSON.parse(keys);
+      if (!k.moved) throw new Error("ArrowDown didn't move to the next row");
+      steps.push(`arrow keys move between rows (${k.stops} tab stops in the list)`);
+      // Download again; then Remove (the deleted one), Delete (the failed one: asked first).
+      await menuOf(files.done);
+      await choose("again");
+      await until("downloaded again", 30000, () => logged(`redownload download ${ids[files.done].id}: done`).length > 0);
+      await until("complete again", 30000, async () => ((await now(files.done)) || {}).status === "Complete");
+      await menuOf(files.gone);
+      await choose("remove");
+      await until("removed from MDM's list", 10000, async () => !(await now(files.gone)));
+      await menuOf(files.failed);
+      await choose("del");
+      const asked = await until("Delete's question", 5000, () => p.evaluate(`document.getElementById("ask").open && document.getElementById("ask-text").textContent`));
+      await snap(p, "dl-delete-ask");
+      await p.evaluate(`(document.getElementById("ask-ok").click(), true)`);
+      await until("deleted from MDM's list", 10000, async () => !(await now(files.failed)));
+      steps.push(`download again, remove, delete (asked: "${asked}")`);
+      // Clear finished: asked, then the finished ones go, their files stay.
+      const again = (await now(files.done)).path;
+      await p.evaluate(`(document.getElementById("dl-clear").click(), true)`);
+      await until("Clear's question", 5000, () => p.evaluate(`document.getElementById("ask").open`));
+      await p.evaluate(`(document.getElementById("ask-ok").click(), true)`);
+      await until("the finished ones cleared", 10000, async () => !(await now(files.done)));
+      if (!fs.existsSync(again)) throw new Error("Clear finished deleted a file");
+      // The running one stopped and removed; then the empty list, and MDM not running.
+      await quick(files.running, titles[0]);
+      await until("stopped", 10000, async () => ((await now(files.running)) || {}).status === "Stopped");
+      await ipc({ action: "remove", ids: [ids[files.running].id] });
+      await until("the empty list", 10000, () => p.evaluate(`!document.getElementById("dl-empty").hidden && document.getElementById("dl-empty-title").textContent`));
+      await snap(p, "dl-empty");
+      await stopApp();
+      const off = await until("MDM not running, said", 15000, () => p.evaluate(`!document.getElementById("dl-empty-act").hidden && document.getElementById("dl-empty-title").textContent`));
+      await snap(p, "dl-off");
+      steps.push(`cleared (files kept); empty; "${off}"`);
+      // The other tabs, pictured.
+      if (shots) {
+        await startApp();
+        const pg = await open(`tab=page&page=${encodeURIComponent(page)}`);
+        await sleep(1200);
+        await snap(pg, "tab-page");
+        await pg.close();
+        const st = await open("tab=settings");
+        await sleep(1200);
+        await snap(st, "tab-settings");
+        await st.close();
+      }
+      return steps.join("; ");
+    } finally {
+      await p.close();
+      await startApp().catch(() => {});
+      const left = await mdmList().catch(() => []);
+      const ours = left.filter((d) => Object.values(ids).some((i) => i.id === d.id) || Object.values(files).includes(d.file));
+      for (const d of ours) await ipc({ action: "pause", ids: [d.id] }).catch(() => {});
+      if (ours.length) await ipc({ action: "remove", ids: ours.map((d) => d.id) }).catch(() => {});
+      await sleep(500);
+      sweep(downloads);
+    }
+  },
+
+  // #1781: the toolbar button's Find images on the lab's gallery (/page?images=1). It finds each
+  // picture at the largest size the page lists (a srcset's 1600w, a <picture>'s WebP 1200w, a 2x),
+  // a lazy loader's data-src, a link to a full size; each address once (the large photo is also
+  // shown and linked), no data: picture, no PDF, no CSS background. At least 300 x 300 with GIF
+  // off keeps four, and those four only reach Link grabber: MDM looks each up there and nothing
+  // else. E2E_SHOTS: <lang>-<scheme>-images-page.png (the tab as it opens), -images-found.png (the
+  // filters set) and -images-sent.png.
+  async images(t) {
+    const shots = process.env.E2E_SHOTS ? path.resolve(process.env.E2E_SHOTS) : "";
+    const tag = `${process.env.E2E_LANG || "en"}-${process.env.E2E_COLOR_SCHEME || "system"}`;
+    await clearLog();
+    // Addresses of this run and browser's own: Link grabber, still open with an earlier
+    // browser's list where its window isn't closed (Linux), adds an address it has only once,
+    // and looks nothing new up (Firefox's run found no look-ups after Chrome's).
+    const seed = Date.now() % 1e9;
+    await t.session.navigate(`${LAB}/page?images=1&seed=${seed}&title=Gallery`);
+    // Its pictures shown, so the page knows their sizes, as a user's would be.
+    const shown = await until("the gallery's pictures", 20000, () => t.session.evaluate(GALLERY_SHOWN));
+    const page = await t.session.evaluate("location.href");
+    const popup = await t.session.tab(`${t.session.base}popup.html?page=${encodeURIComponent(page)}`);
+    const state = () =>
+      popup.evaluate(`(() => ({
+        chips: [...document.querySelectorAll("#images-types .chip")].map((c) => [c.dataset.type, c.querySelector(".n").textContent, c.getAttribute("aria-pressed")]),
+        count: document.getElementById("images-count").textContent,
+        unsized: document.getElementById("images-unsized").hidden ? "" : document.getElementById("images-unsized").textContent,
+        send: !document.getElementById("images-send").hidden && !document.getElementById("images-send").disabled,
+        said: document.getElementById("images-said").hidden ? "" : document.getElementById("images-said").textContent,
+        bad: document.getElementById("images-said").classList.contains("bad"),
+      }))()`);
+    const numbers = (s) => (String(s).match(/\d+/g) || []).map(Number);
+    let found;
+    let kept;
+    try {
+      // The This page tab as it opens (its media list asked for first, as before #1781).
+      await until("the popup's This page tab", 15000, () => popup.evaluate(`!document.getElementById("media").hidden`));
+      await sleep(500);
+      if (shots && popup.shot) await popup.shot(path.join(shots, `${tag}-images-page.png`));
+      await until("the popup's Find images", 15000, () => popup.evaluate(`Boolean(document.getElementById("images")) && !document.getElementById("images").hidden`));
+      // Nothing looked for before the click.
+      const before = await state();
+      if (before.chips.length || before.send) throw new Error(`images listed before Find images: ${JSON.stringify(before)}`);
+      await popup.evaluate(`(document.getElementById("images-find").click(), true)`);
+      found = await until("the pictures found", 15000, async () => {
+        const s = await state();
+        return (s.chips.length || s.said) && s;
+      });
+      const types = found.chips.map(([type, n]) => `${type} ${n}`).join(", ");
+      if (types !== "JPEG 1, PNG 3, WEBP 1, GIF 1, AVIF 1") throw new Error(`the types found: ${types || found.said}`);
+      if (numbers(found.count).join(" ") !== "7 7") throw new Error(`found: ${found.count}`);
+      // At least 300 x 300: the icon and the thumbnail left out, the two the page gives no size
+      // for (the lazy one, the linked one) kept and said; then GIF off.
+      await popup.evaluate(`(() => { for (const id of ["images-w", "images-h"]) { const i = document.getElementById(id); i.value = "300"; i.dispatchEvent(new Event("input")); } return true; })()`);
+      const sized = await state();
+      if (numbers(sized.count).join(" ") !== "5 7" || numbers(sized.unsized).join(" ") !== "2") throw new Error(`at least 300 x 300: ${sized.count} / ${sized.unsized}`);
+      await popup.evaluate(`(document.querySelector('#images-types .chip[data-type="GIF"]').click(), true)`);
+      kept = await state();
+      if (numbers(kept.count).join(" ") !== "4 7" || !kept.send) throw new Error(`GIF off: ${kept.count}, send ${kept.send}`);
+      if (shots && popup.shot) {
+        await popup.evaluate(`(document.getElementById("images").scrollIntoView({ block: "nearest" }), true)`);
+        await popup.shot(path.join(shots, `${tag}-images-found.png`));
+      }
+      await popup.evaluate(`(document.getElementById("images-send").click(), true)`);
+      const sent = await until("the popup's answer", 30000, async () => {
+        const s = await state();
+        return s.said && s;
+      });
+      if (sent.bad) throw new Error(`sending: ${sent.said}`);
+      if (shots && popup.shot) {
+        await popup.evaluate(`(document.getElementById("images").scrollIntoView({ block: "nearest" }), true)`);
+        await popup.shot(path.join(shots, `${tag}-images-sent.png`));
+      }
+    } finally {
+      await popup.close();
+    }
+    // MDM's look-ups in Link grabber (its requests, not the browser's own for the pictures it
+    // showed: those say Sec-Fetch-Mode no-cors).
+    const sent = ["/gen/256K/photo1.jpg", "/gen/128K/photo2.webp", "/gen/512K/photo3.png", "/gen/64K/photo5.avif"];
+    const left = ["/gen/1K/icon.png", "/gen/8K/photo3-thumb.png", "/gen/32K/photo4@2x.gif", "/gen/8K/photo4.gif", "/gen/16K/photo1-small.jpg", "/gen/32K/photo2-600.webp", "/gen/32K/photo2.jpg", "/gen/1K/notes.pdf", ...GALLERY_BACKGROUNDS];
+    const windows = await galleryLookups(seed, sent, left);
+    return `${shown}; found ${found.chips.map(([type, n]) => `${type} ${n}`).join(", ")}; 300 x 300 without GIF: ${kept.count}; MDM looked up ${sent.map((p) => p.split("/").pop()).join(", ")} only${windows}`;
+  },
+
+  // #1781: the right-click menu's "Download all links" on the lab's gallery: its links (the large
+  // photo, photo3.png, the PDF) and, after them, its <img> pictures, found as Find images finds
+  // them (none left out by size or type; never a CSS background), marked as located on the page:
+  // MDM's log says how many of the page's links are such pictures (Link grabber hides those while
+  // "Hide images located on this web page" is ticked), and it looks every one up, and nothing
+  // else (the smaller sizes, the 1x of a 2x, the backgrounds). The large photo, shown and linked,
+  // is a link, not marked. Then "Download selected links" on a selection of the gallery's first
+  // part: its one link and the two pictures in it, marked. Firefox's right-click menu is opened
+  // and its item chosen; Chromium's can't be opened headless, so its handler is called as the
+  // menu calls it.
+  async imageslinks(t) {
+    const log = path.join(data, "logs", "mdm.log");
+    const round = async (selected) => {
+      await clearLog();
+      // Addresses of this round's own (see images).
+      const seed = Date.now() % 1e9;
+      const page = `${LAB}/page?images=1&seed=${seed}&title=Gallery`;
+      await t.session.navigate(page);
+      const shown = await until("the gallery's pictures", 20000, () => t.session.evaluate(GALLERY_SHOWN));
+      // The selection: from the gallery's first line to the large photo's link (the icon, photo1,
+      // the <picture>, photo1 again and its link).
+      if (selected) await t.session.evaluate(`(() => { const r = document.createRange(); r.setStartBefore(document.getElementById("blank")); r.setEndAfter(document.getElementById("full1")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); return s.toString().length; })()`);
+      const from = fs.existsSync(log) ? fs.statSync(log).size : 0;
+      const item = selected ? "mdm-selected" : "mdm-all";
+      let clicked;
+      if (t.kind === "chromium") {
+        clicked = await t.session.inExtension(`(async () => {
+          const tab = (await chrome.tabs.query({})).find((x) => x.url === ${JSON.stringify(page)});
+          if (!tab) return "no tab";
+          await menuClicked({ menuItemId: ${JSON.stringify(item)}, pageUrl: tab.url, frameId: 0 }, tab);
+          const { status } = await chrome.storage.local.get("status");
+          return "called; status " + JSON.stringify(status && status.why);
+        })()`);
+      } else {
+        const at = await t.session.evaluate(`(() => { const b = document.getElementById("blank").getBoundingClientRect(); return [b.left + 4, b.top + b.height / 2]; })()`);
+        clicked = await t.session.menu(at[0], at[1], selected ? "Download selected links with Mister Download Manager" : "Download all links with Mister Download Manager");
+        if (!String(clicked).startsWith("chosen")) throw new Error(`the menu: ${clicked}`);
+      }
+      const links = selected ? ["/gen/256K/photo1.jpg"] : ["/gen/256K/photo1.jpg", "/gen/512K/photo3.png", "/gen/1K/notes.pdf"];
+      const pictures = selected ? ["/gen/1K/icon.png", "/gen/128K/photo2.webp"] : ["/gen/1K/icon.png", "/gen/128K/photo2.webp", "/gen/8K/photo3-thumb.png", "/gen/32K/photo4@2x.gif", "/gen/64K/photo5.avif"];
+      const said = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").slice(from) : "");
+      const marked = await until("MDM's line on the page's pictures", 30000, () => /a page's (\d+) links, (\d+) of them pictures located on it/.exec(said())).catch((e) => {
+        e.message += ` (${clicked})`;
+        throw e;
+      });
+      if (`${marked[1]} ${marked[2]}` !== `${links.length + pictures.length} ${pictures.length}`) throw new Error(`MDM: ${marked[0]}, not ${links.length + pictures.length} links, ${pictures.length} pictures`);
+      // The look-ups, by the round's seed: the PDF's address has none (one address in every
+      // round), so it is counted in MDM's line above but not looked for here.
+      const seeded = (list) => list.filter((x) => !x.endsWith(".pdf"));
+      const others = ["/gen/1K/icon.png", "/gen/128K/photo2.webp", "/gen/8K/photo3-thumb.png", "/gen/32K/photo4@2x.gif", "/gen/64K/photo5.avif", "/gen/512K/photo3.png"].filter((x) => !pictures.includes(x) && !links.includes(x));
+      const left = ["/gen/8K/photo4.gif", "/gen/16K/photo1-small.jpg", "/gen/32K/photo2-600.webp", "/gen/32K/photo2.jpg", ...GALLERY_BACKGROUNDS, ...others];
+      const windows = await galleryLookups(seed, seeded([...links, ...pictures]), left);
+      return `${selected ? "selected" : "all"}: ${String(clicked).split(" {")[0]}; MDM: ${marked[0]}; looked up ${links.length} links and ${pictures.length} pictures, none of the ${left.length} others${windows} (${shown})`;
+    };
+    return `${await round(false)}; ${await round(true)}`;
+  },
+
+  // #695, #800: a video a server's program sends (/remote_control.php, /stream.php as video/mp4,
+  // no Content-Disposition), on a page titled "Lab lecture: week N". The toolbar button's list
+  // names it after the page with its type ("Lab lecture week 1.mp4 · MP4", never
+  // "remote_control.php · PHP"), and MDM saves it so from there; the button over its player (a
+  // plain file) saves "Lab lecture week 2.mp4"; with yt-dlp, the Download video window lists a
+  // `stream.php?file=` video as MP4 and saves an .mp4 (yt-dlp refused a .php). E2E_SHOTS:
+  // <lang>-media-list.png (the popup's list) and <lang>-video-window.png (that window, Windows).
+  async scripted(t) {
+    const shots = process.env.E2E_SHOTS ? path.resolve(process.env.E2E_SHOTS) : "";
+    const lang = process.env.E2E_LANG || "en";
+    const page = (week, src) => `${LAB}/page?title=${encodeURIComponent(`Lab lecture: week ${week}`)}&video=${encodeURIComponent(src)}`;
+    const said = [];
+    // An earlier browser's files of the same names off the list and the disk: they'd be numbered.
+    const earlier = (await mdmList()).filter((d) => /^Lab lecture/.test(d.file)).map((d) => d.id);
+    if (earlier.length) await ipc({ action: "delete", ids: earlier });
+    // The list: named after the page, typed by its server.
+    await t.session.navigate(page(1, `/remote_control.php?id=${t.name}&seed=11`));
+    const at = await t.session.evaluate("location.href");
+    const popup = await t.session.tab(`${t.session.base}popup.html?page=${encodeURIComponent(at)}`);
+    const first = "Lab lecture week 1.mp4";
+    try {
+      const rows = () =>
+        popup.evaluate(`[...document.querySelectorAll("#media-list li")].map((li) => ({
+          tag: li.querySelector(".tag").textContent, name: li.querySelector(".name").textContent }))`);
+      const listed = await until("the popup's media list", 15000, async () => {
+        const r = await rows().catch(() => []);
+        return r.length >= 1 && r;
+      });
+      await sleep(500);
+      if (shots && popup.shot) await popup.shot(path.join(shots, `${lang}-media-list.png`));
+      if (listed.length !== 1 || listed[0].tag !== "MP4" || listed[0].name !== first) {
+        throw new Error(`the list shows ${JSON.stringify(listed)}, not MP4 ${first}`);
+      }
+      await popup.evaluate(`(() => { document.querySelector("#media-list li button").click(); return true; })()`);
+      await arrived(first, 1 << 20, "Video");
+      said.push(`list: MP4 ${first}, saved as it`);
+    } finally {
+      await popup.close();
+    }
+    // The button over its player: the file at once, named the same way.
+    await t.session.navigate(page(2, `/stream.php?id=${t.name}&seed=12`));
+    const v = await rect(t.session, "#video");
+    const b = await hover(t.session, v);
+    if (!b) throw new Error("no button over the video");
+    await t.session.mouse(await mainPart(t.session, b), (b.t + b.b) / 2, "click");
+    await arrived("Lab lecture week 2.mp4", 1 << 20, "Video");
+    said.push("button: Lab lecture week 2.mp4");
+    // The Download video window (#695): yt-dlp's look-up of a `file=` address, typed MP4.
+    if (!WIN || !ytdlp) return `${said.join("; ")} (no Download video window: ${WIN ? "no yt-dlp" : NO_UIA})`;
+    const file = `/stream.php?file=e2e-${t.name}.mp4&token=x&seed=13`;
+    await t.session.navigate(page(3, file));
+    const v3 = await rect(t.session, "#video");
+    const b3 = await hover(t.session, v3);
+    if (!b3) throw new Error("no button over the third video");
+    const address = await clickButton(t.session, b3, "", true);
+    if (address !== `${LAB}${file}`) throw new Error(`the video window got ${address}`);
+    const pid = appPid();
+    await until("yt-dlp's lookup (Download Now enabled)", 60000, () => videoReady(pid));
+    await sleep(1000);
+    if (shots) spawnSync("powershell", ["-NoProfile", "-File", path.join(root, "tools", "lab", "cap-own.ps1"), "-ProcessId", String(pid), "-Title", VIDEO_WINDOW, "-Out", path.join(shots, `${lang}-video-window.png`)]);
+    const before = new Set((await mdmList()).map((d) => d.id));
+    if (!videoDownloadNow(pid)) throw new Error("no Download Now to press");
+    const done = await until("the Download video window's download", 60000, async () => {
+      const d = (await mdmList()).find((x) => !before.has(x.id));
+      if (d && d.status === "Error") throw new Error(`it failed: ${d.error}`);
+      return d && d.status === "Complete" ? d : null;
+    });
+    if (!/\.mp4$/.test(done.file) || path.dirname(path.resolve(done.path)) !== path.join(downloads, "Video")) {
+      throw new Error(`the window saved ${done.path}`);
+    }
+    said.push(`window: ${done.file}`);
+    return said.join("; ");
+  },
+
+  // A page that moves in place (history.pushState, as YouTube does between videos): the button
+  // hands the app the address it is at now, not the one the document loaded at.
+  async inplace(t) {
+    await t.session.navigate(`${LAB}/page?video=${encodeURIComponent("/gen/1M/clip.mp4")}`);
+    // A blob: source, as a site's own player has (there's no file of its own to send).
+    await t.session.evaluate(`(() => { const v = document.querySelector("#video"); v.src = URL.createObjectURL(new MediaSource()); history.pushState({}, "", "/page?video=moved"); return true; })()`);
+    const v = await rect(t.session, "#video");
+    const b = await hover(t.session, v);
+    if (!b) throw new Error("no button over the player");
+    const address = await clickButton(t.session, b);
+    const want = `${LAB}/page?video=moved`;
+    if (address !== want) throw new Error(`the video window got ${address}, not ${want}`);
+    return `sent ${address.replace(LAB, "")}`;
+  },
+
+  // The button's qualities' menu on a stream's player: the click has MDM look the stream up
+  // (yt-dlp), the menu lists its qualities with their sizes (estimated from the variants' bitrate
+  // and the stream's length), and the one picked downloads with only its progress window: MDM,
+  // started in the notification area (as with the session), keeps its main window hidden, and no
+  // Download video window opens. Needs a yt-dlp, as streams does, and an ffmpeg: the lab's stream
+  // has its sound apart (EXT-X-MEDIA), and without ffmpeg to put them together only the sound is
+  // offered, as the Download video window does.
+  async qualities(t) {
+    if (!ytdlp) throw new Skip("no yt-dlp (E2E_YTDLP or PATH)");
+    if (!ffmpeg) throw new Skip("no ffmpeg (E2E_FFMPEG or PATH)");
+    if (!WIN) throw new Skip(NO_UIA);
+    await stopApp();
+    fs.rmSync(path.join(data, "ipc.json"), { force: true });
+    spawn(appExe, ["/startup"], { env: process.env, stdio: "ignore", detached: false });
+    try {
+      await until("the test instance, in the notification area", 20000, () => mdmList().then(() => true, () => false));
+      const pid = appPid();
+      const main = (titles) => titles.filter((x) => /^Mister Download Manager \d/.test(x));
+      const progress = (titles) => titles.find((x) => /^\d+% /.test(x));
+      const at = appWindows(pid);
+      if (main(at).length) throw new Error(`started in the notification area, its main window shows (${at.join(", ")})`);
+      await t.session.navigate(`${LAB}/page?hls=1`);
+      const state = await until("the stream player", 15000, () => t.session.evaluate("document.body.dataset.stream || ''"));
+      if (state !== "done") throw new Error(`the page's player: ${state}`);
+      const v = await rect(t.session, "#player");
+      // #1053: the pointer passing over the button (onto it and off the video within a moment)
+      // asks nothing; resting on it asks at once, without the button's own wait over the video
+      // (600 ms), and the arrow's click later shares that look-up.
+      const asked = lookupsLogged().length;
+      if (!(await hover(t.session, v))) throw new Error("no button over the stream's player");
+      const passAt = await t.session.pill(MORE_AT);
+      if (!passAt) throw new Error("no arrow on the button");
+      await t.session.mouse(passAt.x, passAt.y);
+      await t.session.mouse(v.r + 40, v.b + 40);
+      await sleep(1500);
+      if (lookupsLogged().length !== asked) throw new Error("a pass over the button looked the video up");
+      const b = await hover(t.session, v);
+      if (!b) throw new Error("no button over the stream's player");
+      const restAt = await t.session.pill(MORE_AT);
+      await t.session.mouse(restAt.x, restAt.y);
+      const rested = Date.now();
+      const early = await until("the look-up of the pointer resting on the button", 5000, () => lookupsLogged().slice(asked)[0]);
+      const restMs = early - rested;
+      // An earlier browser's downloads of this stream off the list (with their files): the same
+      // quality again would be a duplicate, which Options' default asks about.
+      const earlier = (await mdmList()).filter((d) => d.url.startsWith(`${LAB}/hls/`)).map((d) => d.id);
+      if (earlier.length) await ipc({ action: "delete", ids: earlier });
+      const before = new Set((await mdmList()).map((d) => d.id));
+      // What the page's own shortcuts would see (a player's Space and arrows).
+      await t.session.evaluate('(() => { window.__mdmKeys = 0; document.addEventListener("keydown", () => { window.__mdmKeys += 1; }); return 0; })()');
+      // #703: the look-up starts as the button shows; its chip then names the best quality.
+      const chipped = await until("the best quality on the button's chip", 60000, async () => {
+        const p = await t.session.pill(PILL_STATE);
+        return p && p.state === "ready" && p.chip ? p : null;
+      });
+      // Its menu: the arrow.
+      await clickArrow(t.session);
+      const clicked = Date.now();
+      // Pictures for a pull request (E2E_SHOTS, see the top): the player and the menu together.
+      const shots = process.env.E2E_SHOTS && t.session.shot ? path.resolve(process.env.E2E_SHOTS) : "";
+      const lang = process.env.E2E_LANG || "en";
+      const snap = (name, p) => {
+        const box = { l: Math.min(v.l, p.box.l) - 10, t: Math.min(v.t, p.box.t) - 10, r: Math.max(v.r, p.box.r) + 10, b: Math.max(v.b, p.box.b) + 10 };
+        return t.session.shot(path.join(shots, `${lang}-${name}.png`), box);
+      };
+      let shotLooking = false;
+      // The menu, looking, then the qualities MDM found.
+      let looked = false;
+      const m = await until("the qualities in the menu", 60000, async () => {
+        if (appWindows(pid).includes(VIDEO_WINDOW)) throw new Error("the arrow opened the Download video window, not the menu");
+        const p = await t.session.picks("row");
+        looked ||= Boolean(p && p.busy);
+        if (shots && p && p.busy && !shotLooking) {
+          shotLooking = true;
+          await snap("looking", p);
+        }
+        if (p && !p.busy && !p.rows.length) throw new Error(`the menu shows no qualities: "${p.note}"`);
+        return p && p.rows.length ? p : null;
+      });
+      const rowsMs = Date.now() - clicked;
+      if (lookupsLogged().length !== asked + 1) throw new Error(`${lookupsLogged().length - asked} look-ups, not the rest's one shared by the arrow's click`);
+      if (restMs > 500) throw new Error(`the look-up came ${restMs} ms after the pointer rested on the button, not about 200 ms`);
+      if (!m.rows.some((r) => r.size)) throw new Error(`no row has a size: ${JSON.stringify(m.rows.map((r) => [r.name, r.size]))}`);
+      if (!m.open.text) throw new Error("no \"All qualities and subtitles…\" under the qualities");
+      // The arrows move through the menu, and the page's shortcuts don't hear them.
+      await t.session.key("ArrowDown");
+      await t.session.key("ArrowUp");
+      const heard = await t.session.evaluate("window.__mdmKeys");
+      if (heard !== 0) throw new Error(`the page heard ${heard} keys the menu used`);
+      // "Download best" first, then the picture's qualities under VIDEO and the sound's under AUDIO
+      // (the ffmpeg gives MP3, Opus and FLAC beside the picture's), each line its own kind.
+      if (m.caps.length !== 2) throw new Error(`the captions are ${JSON.stringify(m.caps)}, not VIDEO and AUDIO`);
+      if (m.rows[0].kind !== "top" || !m.rows[0].name) throw new Error(`the first line isn't "Download best": ${JSON.stringify(m.rows[0])}`);
+      const picture = /\b\d{3,4}p\b/;
+      const pictures = { rows: m.rows.filter((r) => r.kind === "video") };
+      const sounds = { rows: m.rows.filter((r) => r.kind === "audio") };
+      if (!pictures.rows.length || pictures.rows.some((r) => !picture.test(r.name))) throw new Error(`VIDEO lists a sound: ${JSON.stringify(pictures.rows.map((r) => r.name))}`);
+      if (!sounds.rows.length || sounds.rows.some((r) => picture.test(r.name))) throw new Error(`AUDIO lists a picture: ${JSON.stringify(sounds.rows.map((r) => r.name))}`);
+      // #755: each picture's line says its codec (the lab's variants are H.264); #801: a stream's
+      // sizes come from its bitrate, so each is marked as about ("~").
+      if (pictures.rows.some((r) => !/\bH\.264\b/.test(r.name))) throw new Error(`a picture's line without its codec: ${JSON.stringify(pictures.rows.map((r) => r.name))}`);
+      if (pictures.rows.some((r) => !r.size.startsWith("~"))) throw new Error(`a stream's estimate not marked as about: ${JSON.stringify(pictures.rows.map((r) => r.size))}`);
+      await sleep(500);
+      if (shots) await snap("list", await t.session.picks());
+      // #1735: the menu's filters. "Audio only" lists the sound's lines alone ("Download best" the
+      // best of them), kept for the site (the menu closed and opened again); "All" lists every
+      // line again.
+      const chip = (p, dim, value) => (p && p.filters ? p.filters.find((f) => f.dim === dim && f.value === value) : null);
+      const atFirst = await t.session.picks();
+      const audioChip = chip(atFirst, "kind", "audio");
+      if (!audioChip) throw new Error(`no "Audio only" chip: ${JSON.stringify(atFirst && atFirst.filters)}`);
+      const types = atFirst.filters.filter((f) => f.dim === "type").map((f) => f.text);
+      await t.session.mouse(audioChip.x, audioChip.y, "click");
+      const onlySound = await until("only the sound's lines", 5000, async () => {
+        const p = await t.session.picks();
+        return p && p.rows.length > 1 && p.rows.every((r) => r.kind === "top" || r.kind === "audio") ? p : null;
+      });
+      if (picture.test(onlySound.rows[0].name)) throw new Error(`"Download best" under Audio only is a picture: ${onlySound.rows[0].name}`);
+      await sleep(300);
+      if (shots) await snap("filter-audio", await t.session.picks());
+      await clickArrow(t.session);
+      await until("the menu closed", 3000, async () => !(await t.session.picks()));
+      await clickArrow(t.session);
+      const again = await until("the menu again, its filter kept", 5000, async () => {
+        const p = await t.session.picks();
+        return p && p.rows.length > 1 ? p : null;
+      });
+      if (!chip(again, "kind", "audio")?.on || again.rows.some((r) => r.kind === "video")) throw new Error(`the filter wasn't kept: ${JSON.stringify(again.filters)}`);
+      await t.session.mouse(chip(again, "kind", "all").x, chip(again, "kind", "all").y, "click");
+      const everything = await until("every line again", 5000, async () => {
+        const p = await t.session.picks("row");
+        return p && p.rows.some((r) => r.kind === "video") && p.rows.some((r) => r.kind === "audio") ? p : null;
+      });
+      const filtered = `filters: kinds ${atFirst.filters.filter((f) => f.dim === "kind").map((f) => f.text).join("/")}${types.length ? `, types ${types.join("/")}` : ""}; Audio only: ${onlySound.rows.length - 1} lines, kept as the menu opened again; All: ${everything.rows.length - 1}`;
+      // 360p from VIDEO (the click later takes the best, 720p: not the same download).
+      const row = everything.rows.filter((r) => r.kind === "video").find((r) => /\b360p\b/.test(r.name));
+      if (!row) throw new Error(`no 360p in the Video tab: ${JSON.stringify(pictures.rows.map((r) => r.name))}`);
+      const picked = Date.now();
+      await t.session.mouse(row.x, row.y, "click");
+      // MDM downloads the stream's manifest, with only the download's progress window.
+      const item = await until("the quality picked, in MDM's list", 15000, async () => (await mdmList()).find((d) => !before.has(d.id)));
+      if (item.url !== `${LAB}/hls/master.m3u8`) throw new Error(`MDM downloads ${item.url}, not the stream's manifest`);
+      const opened = await until("the download's progress window", 15000, () => progress(appWindows(pid)));
+      const startMs = Date.now() - picked;
+      if (await t.session.picks()) throw new Error("the menu stayed open after the pick");
+      // A moment more: nothing else comes up after it.
+      await sleep(1500);
+      const after = appWindows(pid);
+      if (main(after).length) throw new Error(`the main window showed (${after.join(", ")})`);
+      if (after.includes(VIDEO_WINDOW)) throw new Error("the Download video window opened too");
+      // The main part's click: the best quality (the chip's), started at once, green with "Show".
+      await sleep(7000);
+      const b2 = await hover(t.session, v);
+      if (!b2) throw new Error("no button for the second click");
+      const beforeBest = new Set((await mdmList()).map((d) => d.id));
+      await t.session.mouse(await mainPart(t.session, b2), (b2.t + b2.b) / 2, "click");
+      const best = await until("the best quality, in MDM's list", 60000, async () => (await mdmList()).find((d) => !beforeBest.has(d.id)));
+      const green = await until("the button's green state", 10000, async () => {
+        const p = await t.session.pill(PILL_STATE);
+        return p && p.state === "sent" ? p : null;
+      });
+      if (!green.acts.some((a) => a.act === "show")) throw new Error(`no "Show": ${JSON.stringify(green)}`);
+      if (appWindows(pid).includes(VIDEO_WINDOW)) throw new Error("the click opened the Download video window");
+      const list = (rs) => rs.map((r) => `${r.name}${r.size ? ` ${r.size}` : ""}`).join(", ");
+      return `chip "${chipped.chip}"; ${filtered}; the click: ${best.file} (${green.text} · Show); ${looked ? "looking, then " : ""}VIDEO ${pictures.rows.length} (${list(pictures.rows)}), AUDIO ${sounds.rows.length} (${list(sounds.rows)}); "${row.name}" picked: ${item.file} (${item.status}) with its progress window "${opened}" only, the main window hidden; click to rows ${rowsMs} ms, pick to first progress ${startMs} ms; a pass over the button asked nothing, resting on it asked ${restMs} ms later, once`;
+    } finally {
+      // The next case starts MDM as usual.
+      await stopApp();
+    }
+  },
+
+  // #1662: the button's menu has "Download a part from here..." under "All qualities and
+  // subtitles...": it opens the app's Download video window for the video, its part starting at
+  // the second the player is at (the app says so in its log).
+  async part(t) {
+    if (!ytdlp) throw new Skip("no yt-dlp (E2E_YTDLP or PATH)");
+    if (!WIN) throw new Skip(NO_UIA);
+    await stopApp();
+    fs.rmSync(path.join(data, "ipc.json"), { force: true });
+    spawn(appExe, ["/startup"], { env: process.env, stdio: "ignore", detached: false });
+    try {
+      await until("the test instance, in the notification area", 20000, () => mdmList().then(() => true, () => false));
+      const pid = appPid();
+      appWindows(pid, VIDEO_WINDOW);
+      await t.session.navigate(`${LAB}/page?hls=1`);
+      const state = await until("the stream player", 15000, () => t.session.evaluate("document.body.dataset.stream || ''"));
+      if (state !== "done") throw new Error(`the page's player: ${state}`);
+      // The player a few seconds in, paused there.
+      const second = await until("the player at 3 s", 15000, () =>
+        t.session.evaluate('(() => { const v = document.querySelector("#player"); v.pause(); v.currentTime = 3.6; return v.currentTime >= 3 ? Math.floor(v.currentTime) : 0; })()'));
+      const v = await rect(t.session, "#player");
+      if (!(await hover(t.session, v))) throw new Error("no button over the stream's player");
+      await clickArrow(t.session);
+      const m = await until("the menu, its look-up ended", 60000, async () => {
+        const p = await t.session.picks("open");
+        return p && !p.busy ? p : null;
+      });
+      if (!m.part || !m.part.text) throw new Error(`no "Download a part from here..." in the menu (${m.open.text})`);
+      if (m.part.y <= m.open.y) throw new Error("the part's line isn't under All qualities and subtitles...");
+      const logged = () => {
+        try {
+          return fs.readFileSync(path.join(data, "logs", "mdm.log"), "utf8").split(/\r?\n/).filter((l) => l.includes("Download video, a part from"));
+        } catch {
+          return [];
+        }
+      };
+      const before = logged().length;
+      await t.session.mouse(m.part.x, m.part.y, "click");
+      await until("the Download video window", 15000, () => appWindows(pid).includes(VIDEO_WINDOW));
+      const line = await until("the part's start in MDM's log", 10000, () => logged().slice(before)[0]);
+      if (!line.endsWith(`a part from ${second} s`)) throw new Error(`MDM got ${line}, not the player's ${second} s`);
+      return `"${m.part.text}" under "${m.open.text}": the Download video window, its part from ${second} s (the player's)`;
+    } finally {
+      await stopApp();
+    }
+  },
+
+  // #1092: a feed whose page names no video (/feed: yt-dlp finds none in it nor in its post's
+  // page), its players fed by the page (blob:): the button over each offers what the tab played
+  // for that video, found by its length. The first post's file, fetched in ranges: "Download best"
+  // its MP4, downloaded by MDM's engine with the feed as Referer; the second's HLS stream: its
+  // qualities, looked up by MDM, one picked and downloaded; the third, the next video, only begun:
+  // its own file, never the first's. E2E_SHOTS: <lang>-played-file.png and
+  // <lang>-played-stream.png (the player and its menu); with E2E_PLAYED_BEFORE=1 (an older
+  // extension, for a pull request's "before") <lang>-played-file-before.png and
+  // <lang>-played-stream-before.png only.
+  async played(t) {
+    if (!ytdlp) throw new Skip("no yt-dlp (E2E_YTDLP or PATH)");
+    if (!ffmpeg) throw new Skip("no ffmpeg (E2E_FFMPEG or PATH)");
+    await stopApp();
+    fs.rmSync(path.join(data, "ipc.json"), { force: true });
+    spawn(appExe, ["/startup"], { env: process.env, stdio: "ignore", detached: false });
+    try {
+      await until("the test instance, in the notification area", 20000, () => mdmList().then(() => true, () => false));
+      const s = t.session;
+      const FILE_A = "/gen/2M/feed-a.mp4";
+      // An earlier browser's downloads of these off the list (with their files).
+      const earlier = (await mdmList()).filter((d) => d.url.startsWith(`${LAB}${FILE_A}`) || d.url.startsWith(`${LAB}/hls/`)).map((d) => d.id);
+      if (earlier.length) await ipc({ action: "delete", ids: earlier });
+      await s.navigate(`${LAB}/feed`);
+      const state = await until("the feed's players", 30000, () => s.evaluate("document.body.dataset.feed || ''"));
+      if (state !== "done") throw new Error(`the feed's players: ${state} ${await s.evaluate("document.body.dataset.feedError || ''")}`);
+      const shots = process.env.E2E_SHOTS && s.shot ? path.resolve(process.env.E2E_SHOTS) : "";
+      const lang = process.env.E2E_LANG || "en";
+      // The button over `v`, the pointer brought onto it again a few times (MDM may be slow to say
+      // the button may show while it looks a video up). Over `v` itself (buttonOver): the last
+      // video's button stays a moment, faint, after the pointer left it (#1735), and its arrow,
+      // scrolled out of the window with its video, is no button for this one.
+      const over = async (v) => {
+        for (let i = 0; i < 4; i++) {
+          const b = await buttonOver(s, v);
+          if (b) return b;
+          await s.mouse(2, 2);
+          await sleep(1000);
+        }
+        return null;
+      };
+      // The button over `sel` with `chip`, its menu opened and filled (a picture of both: `shot`).
+      const menuOver = async (sel, chip, shot = "") => {
+        await s.mouse(2, 2);
+        await s.evaluate(`document.querySelector(${JSON.stringify(sel)}).scrollIntoView({ block: "center" })`);
+        await sleep(500);
+        const v = await rect(s, sel);
+        if (!(await over(v))) throw new Error(`${sel}: no button`);
+        // E2E_PLAYED_BEFORE=1: pictures of an older extension's menu there (a pull request's
+        // "before"), which never offers what played: its menu once its look-up ended, then no more.
+        // Its menu: its arrow (the pointer resting on the button starts its look-up, #1053), then
+        // what the look-up and what the tab played came to (a minute and a half at most).
+        if (!(await clickArrow(s))) throw new Error(`${sel}: the button has no arrow`);
+        const filled = (q) => q && !q.busy && (q.rows.length || q.note);
+        const said = new Set();
+        const m = await until(`${sel}: its menu`, 90000, async () => {
+          const q = await s.picks("row");
+          if (q) said.add(q.busy ? "looking" : q.note || q.rows.map((r) => r.name).join(", "));
+          return filled(q) ? q : null;
+        }).catch((e) => {
+          // An older extension may have nothing to say there (a feed's video no post names).
+          if (process.env.E2E_PLAYED_BEFORE) return null;
+          throw new Error(`${e.message} (it said: ${[...said].join(" | ")})`);
+        });
+        // E2E_PLAYED_BEFORE=1: pictures of an older extension's menu there (a pull request's
+        // "before"), which never offers what played.
+        if (process.env.E2E_PLAYED_BEFORE) {
+          await sleep(400);
+          const q = (await s.picks()) || m || { box: (await rect(s, "mdm-video-button")) || v };
+          if (shots && shot) await s.shot(path.join(shots, `${lang}-${shot}-before.png`), { l: Math.min(v.l, q.box.l) - 10, t: Math.min(v.t, q.box.t) - 10, r: Math.max(v.r, q.box.r) + 10, b: Math.max(v.b, q.box.b) + 10 });
+          return null;
+        }
+        if (!m.rows.length) throw new Error(`${sel}: its menu says "${m.note}"`);
+        // The whole menu inside the window, where a person can reach its lines (grown with its
+        // filters, #1735, it went past the window's top over a video in the window's middle). Its
+        // lines where they are then.
+        const view = await s.evaluate("({ w: innerWidth, h: innerHeight })");
+        const placed = await until(`${sel}: its menu inside the window`, 3000, async () => {
+          const q = await s.picks("row");
+          return q && q.box.t >= 0 && q.box.l >= 0 && q.box.b <= view.h && q.box.r <= view.w ? q : null;
+        }).catch(async () => {
+          throw new Error(`${sel}: its menu reaches out of the window: ${JSON.stringify(((await s.picks()) || {}).box)} in ${view.w}x${view.h}`);
+        });
+        Object.assign(m, placed);
+        const p = await s.pill(PILL_STATE);
+        if (!p || p.chip !== chip) throw new Error(`${sel}: the button's chip is "${p && p.chip}", not ${chip}`);
+        if (shots && shot) {
+          await sleep(400);
+          const q = await s.picks();
+          await s.shot(path.join(shots, `${lang}-${shot}.png`), { l: Math.min(v.l, q.box.l) - 10, t: Math.min(v.t, q.box.t) - 10, r: Math.max(v.r, q.box.r) + 10, b: Math.max(v.b, q.box.b) + 10 });
+        }
+        return { p, m };
+      };
+      // A size of `n` MB in the browser's language ("2 MB", "2 م.ب").
+      const megabytes = (size, n) => new RegExp(`^(${n}|${"٠١٢٣٤٥٦٧٨٩"[n]})\\s?\\S+$`).test(size.replace(/\u00a0/g, " "));
+      const rows = (m) => m.rows.map((r) => `${r.name}${r.size ? ` ${r.size}` : ""}`).join(", ");
+      // The first post: its file (2 MB, 360p MP4), its only line; the next video's (3 MB) never.
+      const one = await menuOver("#feed1", "360p", "played-file");
+      if (!one) {
+        await menuOver("#feed2", "720p", "played-stream");
+        throw new Skip("E2E_PLAYED_BEFORE: the older menus' pictures taken");
+      }
+      const top = one.m.rows[0];
+      if (one.m.rows.length !== 1 || top.kind !== "top" || !/\bMP4\b/.test(top.name) || !megabytes(top.size, 2)) {
+        throw new Error(`#feed1's menu: ${rows(one.m)}`);
+      }
+      await clearLog();
+      const before = new Set((await mdmList()).map((d) => d.id));
+      await s.mouse(top.x, top.y, "click");
+      const item = await until("#feed1's file, in MDM's list", 15000, async () => (await mdmList().catch(() => [])).find((d) => !before.has(d.id))).catch(async (e) => {
+        throw new Error(`${e.message} (the button: ${JSON.stringify(await s.pill(PILL_STATE))}, the menu: ${JSON.stringify(await s.picks())})`);
+      });
+      if (!item.url.startsWith(`${LAB}${FILE_A}?`)) throw new Error(`MDM downloads ${item.url}, not #feed1's file`);
+      const green = await until("the button's green state", 10000, async () => {
+        const q = await s.pill(PILL_STATE);
+        return q && q.state === "sent" ? q : null;
+      });
+      const done = await until(`${item.file}, complete`, 45000, async () => {
+        const d = (await mdmList().catch(() => [])).find((x) => x.id === item.id);
+        if (d && d.status === "Error") throw new Error(`${item.file}: ${d.error}`);
+        return d && d.status === "Complete" ? d : null;
+      });
+      if (fs.statSync(done.path).size !== 2 << 20) throw new Error(`${done.path}: ${fs.statSync(done.path).size} bytes`);
+      // Every request of MDM's for it: the feed as its Referer.
+      const got = await requests(FILE_A);
+      if (!got.length || got.some((e) => e.referer !== `${LAB}/feed`)) throw new Error(`MDM's requests for #feed1's file: ${JSON.stringify(got.map((e) => [brief(e), e.referer]))}`);
+      // The second: the stream's qualities (MDM's look-up of its manifest); 360p picked.
+      const two = await menuOver("#feed2", "720p", "played-stream");
+      const q360 = two.m.rows.find((r) => r.kind === "video" && /\b360p\b/.test(r.name));
+      if (!q360 || !two.m.rows.some((r) => /\b720p\b/.test(r.name))) throw new Error(`#feed2's menu: ${rows(two.m)}`);
+      const before2 = new Set((await mdmList()).map((d) => d.id));
+      await s.mouse(q360.x, q360.y, "click");
+      const stream = await until("#feed2's 360p, in MDM's list", 15000, async () => (await mdmList().catch(() => [])).find((d) => !before2.has(d.id)));
+      if (stream.url !== `${LAB}/hls/master.m3u8`) throw new Error(`MDM downloads ${stream.url}, not #feed2's stream`);
+      const streamed = await until(`${stream.file}, complete`, 90000, async () => {
+        const d = (await mdmList().catch(() => [])).find((x) => x.id === stream.id);
+        if (d && d.status === "Error") throw new Error(`${stream.file}: ${d.error}`);
+        return d && d.status === "Complete" ? d : null;
+      });
+      // The third, the next video: its own file (3 MB), not the first's.
+      const three = await menuOver("#feed3", "360p");
+      if (three.m.rows.length !== 1 || !megabytes(three.m.rows[0].size, 3)) throw new Error(`#feed3's menu: ${rows(three.m)}`);
+      await s.mouse(2, 2);
+      return `#feed1: chip "${one.p.chip}", "${rows(one.m)}", ${done.file} ${done.size} bytes, ${got.length} request(s) with the feed as Referer, "${green.text}"; #feed2: ${rows(two.m)}, 360p: ${streamed.file}; #feed3: "${rows(three.m)}"`;
+    } finally {
+      await stopApp();
+    }
+  },
+
+  // #1826: a video that hasn't played, on a site yt-dlp has no reader for (pages answered here at
+  // clips.example.test, which yt-dlp can't reach, so the page's own look-up finds nothing): the
+  // button takes the stream address the page wrote for its player ("\/" for "/") and looks that
+  // up, the video never playing. Only what the page names is asked of the lab (its log); of two
+  // variants named in a JSON script the better one, its look-up ended within its minute; a page
+  // naming none asks the lab for nothing. "Download best" downloads the stream to its end.
+  async beforeplay(t) {
+    if (!ytdlp) throw new Skip("no yt-dlp (E2E_YTDLP or PATH)");
+    if (!ffmpeg) throw new Skip("no ffmpeg (E2E_FFMPEG or PATH)");
+    await stopApp();
+    fs.rmSync(path.join(data, "ipc.json"), { force: true });
+    spawn(appExe, ["/startup"], { env: process.env, stdio: "ignore", detached: false });
+    try {
+      await until("the test instance, in the notification area", 20000, () => mdmList().then(() => true, () => false));
+      const s = t.session;
+      const HOST = "clips.example.test";
+      const esc = (p) => JSON.stringify(`${LAB}${p}`).replaceAll("/", "\\/");
+      const player = (script) =>
+        `<!doctype html><meta charset="utf-8"><title>A clip before it plays</title><body style="margin:0">` +
+        `<video id="clip" width="640" height="360" controls preload="none"></video><script>${script}</script></body>`;
+      const pages = {
+        "/one.html": player(`window.playerConfig = {"sources": {"hls": ${esc("/hls/master.m3u8")}}};`),
+        "/two.html": player(`window.playerConfig = {"hls": {"360": ${esc("/hls/360p/index.m3u8")}, "720": ${esc("/hls/720p/index.m3u8")}}};`),
+        "/none.html": player(`window.playerConfig = {"poster": "/poster.jpg"};`),
+      };
+      await s.serve([HOST], (url) => {
+        const page = pages[new URL(url).pathname];
+        return page ? { status: 200, type: "text/html; charset=utf-8", body: page } : { status: 404, type: "text/plain", body: "not a sample page" };
+      });
+      const earlier = (await mdmList()).filter((d) => d.url.startsWith(`${LAB}/hls/`)).map((d) => d.id);
+      if (earlier.length) await ipc({ action: "delete", ids: earlier });
+      // What the lab was asked for under /hls/ since its log was cleared.
+      const asked = async () => (await (await fetch(`${LAB}/_log`)).json()).filter((e) => e.path.startsWith("/hls")).map((e) => `${e.path} ${e.status}`);
+      const notPlayed = async (page) => {
+        const played = await s.evaluate(`(() => { const v = document.getElementById("clip"); return v.currentSrc || (v.paused ? "" : "playing"); })()`);
+        if (played) throw new Error(`${page}: the clip played (${played})`);
+      };
+      const rows = (m) => m.rows.map((r) => `${r.name}${r.size ? ` ${r.size}` : ""}`).join(", ");
+      // The button over the clip, its menu (the pointer resting on its arrow starts the look-up),
+      // followed until the look-up ended.
+      const menuOf = async (page) => {
+        await s.mouse(2, 2);
+        await clearLog();
+        await s.navigate(`http://${HOST}${page}`);
+        const v = await until(`${page}: the clip`, 10000, () => rect(s, "#clip"));
+        let b = null;
+        for (let i = 0; i < 4 && !b; i++) {
+          b = await hover(s, v);
+          if (!b) {
+            await s.mouse(2, 2);
+            await sleep(1000);
+          }
+        }
+        if (!b) throw new Error(`${page}: no button over the clip`);
+        await clickArrow(s);
+        const opened = Date.now();
+        const said = new Set();
+        const m = await until(`${page}: its menu, its look-up ended`, 75000, async () => {
+          const q = await s.picks("row");
+          if (q) said.add(q.busy ? "looking" : q.note || rows(q));
+          return q && !q.busy && (q.rows.length || q.note) ? q : null;
+        }).catch((e) => {
+          throw new Error(`${e.message} (it said: ${[...said].join(" | ")})`);
+        });
+        await notPlayed(page);
+        return { m, ms: Date.now() - opened, asked: await asked(), p: await s.pill(PILL_STATE) };
+      };
+      // The master playlist the page named: its qualities, the chip its best, and only it and
+      // what it lists asked for.
+      const one = await menuOf("/one.html");
+      if (!one.m.rows.some((r) => /\b720p\b/.test(r.name)) || !one.m.rows.some((r) => /\b360p\b/.test(r.name))) throw new Error(`/one.html's menu: ${rows(one.m) || one.m.note}`);
+      if (!one.p || one.p.chip !== "720p") throw new Error(`/one.html: the chip is "${one.p && one.p.chip}", not 720p`);
+      const strange = one.asked.filter((a) => !/^\/hls\/(?:master\.m3u8|(?:720p|360p|audio)\/[\w.]+) 200$/.test(a));
+      if (!one.asked.length || strange.length) throw new Error(`/one.html: the lab was asked for ${one.asked.join(", ") || "nothing"}`);
+      const before = new Set((await mdmList()).map((d) => d.id));
+      await s.mouse(one.m.rows[0].x, one.m.rows[0].y, "click");
+      const item = await until("/one.html's best quality, in MDM's list", 15000, async () => (await mdmList().catch(() => [])).find((d) => !before.has(d.id)));
+      if (item.url !== `${LAB}/hls/master.m3u8`) throw new Error(`MDM downloads ${item.url}, not the stream the page named`);
+      const done = await until(`${item.file}, complete`, 90000, async () => {
+        const d = (await mdmList().catch(() => [])).find((x) => x.id === item.id);
+        if (d && d.status === "Error") throw new Error(`${item.file}: ${d.error}`);
+        return d && d.status === "Complete" ? d : null;
+      });
+      await notPlayed("/one.html");
+      // Two variants in a JSON script: the 720p one looked up, never the 360p, within the minute.
+      const two = await menuOf("/two.html");
+      if (!two.asked.some((a) => a === "/hls/720p/index.m3u8 200") || two.asked.some((a) => a.startsWith("/hls/360p/"))) throw new Error(`/two.html: the lab was asked for ${two.asked.join(", ") || "nothing"}`);
+      if (two.ms > 65000) throw new Error(`/two.html: its look-up ended ${two.ms} ms after the menu opened, past its minute`);
+      // None named: nothing asked.
+      const none = await menuOf("/none.html");
+      if (none.asked.length) throw new Error(`/none.html: the lab was asked for ${none.asked.join(", ")}`);
+      await s.mouse(2, 2);
+      return `/one.html: chip "${one.p.chip}", ${rows(one.m)} in ${one.ms} ms, lab asked ${one.asked.length}x (${[...new Set(one.asked.map((a) => a.split("/")[2]))].join(", ")}), "Download best": ${done.file} ${done.size} bytes, never played; /two.html: ${rows(two.m) || two.m.note} in ${two.ms} ms, asked ${two.asked.join(", ")}; /none.html: "${none.m.note || rows(none.m)}" in ${none.ms} ms, nothing asked`;
+    } finally {
+      await stopApp();
+    }
+  },
+
+  // #900: a stream on another site's server that serves it only to its page's player: every
+  // request, its playlists' and each segment's, must carry that page's Origin and a Referer on it
+  // (the lab's /hlsg/, as a site's video server checks; 403 otherwise). The page is the lab's on
+  // localhost, the stream on 127.0.0.1. The button's look-up finds its qualities, and one picked
+  // in its menu downloads through MDM's engine to its end, every request of MDM's with what the
+  // browser sent (E2E_GUARDED_SHOT: a screenshot of the button's menu then, for a PR's body).
+  async guarded(t) {
+    if (!ytdlp) throw new Skip("no yt-dlp (E2E_YTDLP or PATH)");
+    if (!ffmpeg) throw new Skip("no ffmpeg (E2E_FFMPEG or PATH)");
+    const page = `http://localhost:${PORT}`;
+    const site = `localhost:${PORT}`;
+    await clearLog();
+    await t.session.navigate(`${page}/page?hlsg=127.0.0.1:${PORT}&title=${encodeURIComponent("A guarded stream")}`);
+    const state = await until("the stream player", 15000, () => t.session.evaluate("document.body.dataset.stream || ''"));
+    if (state !== "done") throw new Error(`the page's player: ${state} ${await t.session.evaluate("document.body.dataset.streamError || ''")}`);
+    const guarded = (x) => x.path.startsWith(`/hlsg/${site}/`);
+    const browser = (await (await fetch(`${LAB}/_log`)).json()).filter(guarded);
+    if (!browser.length || browser.some((x) => x.status !== 200)) throw new Error(`the browser's own requests: ${browser.map((x) => `${x.path} ${x.status}`).join(", ")}`);
+    // Without the page's Origin, the stream's server refuses it, as the issue's did.
+    const bare = await fetch(`${LAB}/hlsg/${site}/master.m3u8`, { headers: { Referer: `${page}/page` } });
+    if (bare.status !== 403) throw new Error(`the guarded stream answered ${bare.status} without the page's Origin`);
+    const earlier = (await mdmList()).filter((d) => d.url.startsWith(`${LAB}/hlsg/`)).map((d) => d.id);
+    if (earlier.length) await ipc({ action: "delete", ids: earlier });
+    await clearLog();
+    const v = await rect(t.session, "#player");
+    const b = await hover(t.session, v);
+    if (!b) throw new Error("no button over the stream's player");
+    const before = new Set((await mdmList()).map((d) => d.id));
+    const mdm = async () => (await (await fetch(`${LAB}/_log`)).json()).filter(guarded);
+    const refused = async () => (await mdm()).filter((x) => x.status !== 200).map((x) => `${x.path} ${x.status} (origin ${x.origin || "none"}, referer ${x.referer || "none"})`);
+    // The look-up: its chip names the best quality (a failed one names none).
+    let last = null;
+    const pill = await until("the best quality on the button's chip", 60000, async () => {
+      last = await t.session.pill(PILL_STATE);
+      return last && last.state === "ready" && last.chip ? last : null;
+    }).catch(async () => {
+      throw new Error(`no quality found (the button: ${last && last.state} "${last && last.text}"); the stream's server refused: ${(await refused()).join(", ") || "nothing"}`);
+    });
+    // Its menu: the sound's "original" line, one stream, downloaded by MDM's engine to its end
+    // (no merge: the lab's tracks carry sound only, which yt-dlp's merge with some ffmpeg
+    // builds refuses, whatever the request).
+    await clickArrow(t.session);
+    const m = await until("the qualities in the menu", 30000, async () => {
+      const p = await t.session.picks("row");
+      return p && p.rows.length ? p : null;
+    });
+    if (process.env.E2E_GUARDED_SHOT && t.session.shot) {
+      await sleep(400);
+      await t.session.shot(process.env.E2E_GUARDED_SHOT, { l: Math.min(v.l, m.box.l) - 10, t: Math.min(v.t, m.box.t) - 10, r: Math.max(v.r, m.box.r) + 10, b: Math.max(v.b, m.box.b) + 10 });
+    }
+    const row = m.rows.find((r) => r.kind === "audio" && /original/i.test(r.name));
+    if (!row) throw new Error(`no original sound in the menu: ${JSON.stringify(m.rows.map((r) => r.name))}`);
+    await t.session.mouse(row.x, row.y, "click");
+    const item = await until("the stream, in MDM's list", 60000, async () => (await mdmList()).find((d) => !before.has(d.id)));
+    const done = await until("the download's end", 120000, async () => {
+      const d = (await mdmList()).find((x) => x.id === item.id);
+      if (d && d.status === "Error") throw new Error(`the download failed: ${d.error}; refused: ${(await refused()).join(", ")}`);
+      return d && d.status === "Complete" ? d : null;
+    });
+    // Every request of MDM's (yt-dlp's look-up and the engine's playlists and segments): 200,
+    // with the page's Origin and Referer.
+    const asked = await mdm();
+    const segments = asked.filter((x) => x.path.endsWith(".ts"));
+    const bad = await refused();
+    if (bad.length) throw new Error(`refused: ${bad.join(", ")}`);
+    const lacking = asked.filter((x) => x.origin !== page || !(x.referer || "").startsWith(`${page}/`));
+    if (lacking.length) throw new Error(`without the page's Origin and Referer: ${lacking.map((x) => `${x.path} (${x.origin}, ${x.referer})`).join(", ")}`);
+    if (segments.length < 3) throw new Error(`only ${segments.length} segments asked for: ${asked.map((x) => x.path).join(", ")}`);
+    await t.session.mouse(5, 5);
+    return `chip "${pill.chip}"; "${row.name}" picked: ${done.file} (${fs.statSync(done.path).size} bytes); MDM's ${asked.length} requests (${asked.length - segments.length} playlists, ${segments.length} segments) all 200 with Origin ${page} and its Referer`;
+  },
+
+  // E2E_VIDEO_PAGE=<a video's page>: the button's qualities' menu on a real site (a pull
+  // request's screenshots and its real check; the network's, so never by default): the lines the
+  // menu shows, then, with E2E_VIDEO_PICK=<a pattern of a line's words>, that line picked and
+  // downloaded to its end, its file's size beside the line's (#801: the size shown is the size
+  // that comes). E2E_SHOTS as in `qualities`: <lang>-page-list.png (the menu), page-pick.png
+  // (the line about to be picked, scrolled to). E2E_PAGE_REST=<ms> times the click instead (#1053):
+  // the pointer goes over the video and straight onto the button's arrow, rests there that long
+  // and clicks; how long from the click to the qualities is the case's answer.
+  async page(t) {
+    const address = process.env.E2E_VIDEO_PAGE;
+    if (!address) throw new Skip("no E2E_VIDEO_PAGE");
+    if (!ytdlp) throw new Skip("no yt-dlp (E2E_YTDLP or PATH)");
+    if (!ffmpeg) throw new Skip("no ffmpeg (E2E_FFMPEG or PATH)");
+    if (!WIN) throw new Skip(NO_UIA);
+    await stopApp();
+    fs.rmSync(path.join(data, "ipc.json"), { force: true });
+    spawn(appExe, ["/startup"], { env: process.env, stdio: "ignore", detached: false });
+    try {
+      await until("the test instance, in the notification area", 20000, () => mdmList().then(() => true, () => false));
+      await t.session.navigate(address);
+      // Timing the click: the video playing, as a person watching it would have it (a player
+      // that waits for its play button shows no picture before).
+      if (process.env.E2E_PAGE_REST) {
+        await until("the page's video", 30000, () => rect(t.session, "video"));
+        await t.session.evaluate("(() => { const v = document.querySelector('video'); v.muted = true; v.play().catch(() => {}); return 0; })()");
+        await sleep(2000);
+      }
+      const v = await until("the page's video", 30000, () => rect(t.session, "video"));
+      // A heavy page (YouTube) may still be busy at the first try.
+      const b = (await hover(t.session, v)) || (await hover(t.session, v));
+      if (!b) throw new Error("no button over the page's video");
+      const rest = process.env.E2E_PAGE_REST;
+      if (rest) {
+        const at = await t.session.pill(MORE_AT);
+        if (!at) throw new Error("no arrow on the button");
+        await t.session.mouse(at.x, at.y);
+        await sleep(Number(rest));
+        await t.session.mouse(at.x, at.y, "click");
+        const clicked = Date.now();
+        // Asked every 50 ms (`until`'s quarter second would blur the time).
+        for (;;) {
+          const p = await t.session.picks("row");
+          if (p && !p.busy && !p.rows.length) throw new Error(`the menu shows no qualities: "${p.note}"`);
+          // Done looking (the lines under "Download best" are there).
+          if (p && !p.busy && p.rows.length) return `on the button ${rest} ms, click to ${p.rows.length - 1} qualities ${Date.now() - clicked} ms`;
+          if (Date.now() - clicked > 120000) throw new Error("timed out: the qualities in the menu");
+          await sleep(50);
+        }
+      }
+      await until("the best quality on the button's chip", 120000, async () => {
+        const p = await t.session.pill(PILL_STATE);
+        return p && p.state === "ready" && p.chip ? p : null;
+      });
+      await clickArrow(t.session);
+      const m = await until("the qualities in the menu", 300000, async () => {
+        const p = await t.session.picks("row");
+        if (p && !p.busy && !p.rows.length) throw new Error(`the menu shows no qualities: "${p.note}"`);
+        return p && p.rows.length ? p : null;
+      });
+      const shots = process.env.E2E_SHOTS && t.session.shot ? path.resolve(process.env.E2E_SHOTS) : "";
+      const lang = process.env.E2E_LANG || "en";
+      const snap = (name, p) => t.session.shot(path.join(shots, `${lang}-${name}.png`), { l: p.box.l - 10, t: p.box.t - 10, r: p.box.r + 10, b: p.box.b + 10 });
+      await sleep(500);
+      if (shots) await snap("page-list", await t.session.picks());
+      const lines = m.rows.map((r) => `${r.name} = ${r.size}`);
+      // #852: what the menu says above them (YouTube without a JavaScript runtime).
+      if (m.note) lines.unshift(`note: ${m.note}`);
+      const pick = process.env.E2E_VIDEO_PICK;
+      if (!pick) return lines.join("; ");
+      const wanted = new RegExp(pick);
+      const row = m.rows.find((r) => r.kind !== "top" && wanted.test(r.name));
+      if (!row) throw new Error(`no line like ${pick}: ${lines.join("; ")}`);
+      // Where it is now (the first lines are in the menu's view).
+      const now = await t.session.picks();
+      const seen = now.rows.find((r) => r.choice === row.choice) || row;
+      if (shots) await snap("page-pick", now);
+      const before = new Set((await mdmList()).map((d) => d.id));
+      await t.session.mouse(seen.x, seen.y, "click");
+      const item = await until("the line picked, in MDM's list", 30000, async () => (await mdmList()).find((d) => !before.has(d.id)));
+      const done = await until("the download's end", 20 * 60000, async () => {
+        const d = (await mdmList()).find((x) => x.id === item.id);
+        if (d && d.status === "Error") throw new Error(`the download failed: ${d.error}`);
+        return d && d.status === "Complete" ? d : null;
+      });
+      const bytes = fs.statSync(done.path).size;
+      return `${lines.join("; ")}; picked "${seen.name}" (${seen.size}): ${done.file}, ${bytes} bytes`;
+    } finally {
+      await stopApp();
+    }
+  },
+
+  // Before `video`, which ends with "Never on this site" for the lab in the last browser.
+  async panelOptions(t) {
+    return videoButtonFollowsOptions(t.session);
+  },
+
+  // Before `video`: its last step turns the button off for the lab's site in the last browser.
+  async videoFocus(t) {
+    // Headless Firefox refuses the player's fullscreen request and Tab's focus on it here.
+    if (t.kind === "firefox") throw new Skip("headless Firefox denies fullscreen and keyboard focus to the test page");
+    return videoFocus(t.session);
+  },
+
+  // #336: one video, one button, in full screen too. As YouTube does in Firefox, the whole page
+  // goes full screen (<html>), then a player's own element; out again. Then (Firefox's family) the
+  // extension updated while its button shows: Firefox gives the new copy a world of its own, and
+  // the old copy's button stayed on the page, frozen, beside the new one.
+  async fullscreen(t) {
+    const s = t.session;
+    const firefox = Boolean(s.inBrowser);
+    // Headless Firefox grants full screen only to a page whose window has the focus, which it
+    // gives when its window is told to take it (again after each full screen).
+    const focus = () =>
+      firefox &&
+      s.inBrowser(`(() => { window.focus(); Services.focus.activeWindow = window; gBrowser.selectedBrowser.focus(); return Services.focus.activeWindow === window; })()`);
+    if (firefox) {
+      await focus();
+      await s.inBrowser(`(Services.prefs.setIntPref("full-screen-api.warning.timeout", 0), Services.prefs.setCharPref("full-screen-api.transition-duration.enter", "0 0"), Services.prefs.setCharPref("full-screen-api.transition-duration.leave", "0 0"), Services.prefs.setBoolPref("full-screen-api.allow-trusted-requests-only", false), "set")`);
+    }
+    await s.navigate(`${LAB}/page?video=${encodeURIComponent("/gen/1M/clip.mp4")}`);
+    await s.evaluate(`(() => {
+      const v = document.querySelector("#video");
+      const player = document.createElement("div");
+      player.id = "fs-player";
+      player.style.cssText = "width:640px;height:360px;background:#18212d;margin-top:40px";
+      v.before(player);
+      player.append(v);
+      v.controls = false;
+      v.style.cssText = "width:100%;height:100%";
+      // Room to scroll: a frozen button stays where it was as the video moves.
+      document.body.style.minHeight = "2000px";
+      return true;
+    })()`);
+    // The buttons on the page (shown or not), and how many show.
+    const count = () =>
+      s.evaluate(`(() => { const all = [...document.querySelectorAll("mdm-video-button")];
+        return { all: all.length, shown: all.filter((b) => b.style.getPropertyValue("display") === "block").length }; })()`);
+    const one = async (when) => {
+      const v = await rect(s, "#video");
+      if (!(await hover(s, v))) throw new Error(`${when}: no button over the video ${JSON.stringify(v)}, ${JSON.stringify(await count())}`);
+      // One on the page (a button left by an old copy counts, shown or not), never two shown.
+      await sleep(300);
+      const n = await count();
+      if (n.shown > 1 || n.all !== 1) {
+        const where = await s.evaluate(`[...document.querySelectorAll("mdm-video-button")].map((b) => [b.parentNode.localName + "#" + b.parentNode.id, b.style.getPropertyValue("display"), b.style.getPropertyValue("transform")].join(" ")).join("; ") + " | fs: " + (document.fullscreenElement ? document.fullscreenElement.localName + "#" + document.fullscreenElement.id : "none")`);
+        throw new Error(`${when}: ${n.shown} buttons shown, ${n.all} on the page (${where})`);
+      }
+    };
+    const enter = async (sel) => {
+      // Firefox may refuse a request that comes right after leaving full screen: asked again.
+      let r = "";
+      for (let i = 0; i < 5; i++) {
+        await focus();
+        r = await s.evaluate(`document.querySelector(${JSON.stringify(sel)}).requestFullscreen().then(() => document.fullscreenElement.localName, (e) => "refused: " + e)`);
+        if (!/^refused/.test(r)) break;
+        await sleep(1000);
+      }
+      if (/^refused/.test(r)) throw new Error(`full screen (${sel}) ${r}`);
+      await sleep(500);
+    };
+    const leave = async () => {
+      await s.evaluate("document.exitFullscreen().then(() => true, () => false)");
+      await until("the page out of full screen", 5000, () => s.evaluate("!document.fullscreenElement"));
+      await sleep(500);
+    };
+    const done = [];
+    await one("before full screen");
+    await enter("html");
+    await one("the page in full screen");
+    await leave();
+    await one("back from the page's full screen");
+    await enter("#fs-player");
+    await one("the player in full screen");
+    await leave();
+    await one("back from the player's full screen");
+    done.push("one button in and out of full screen (the page's, the player's)");
+    if (firefox) {
+      // The extension updated while its button shows over the video in full screen.
+      await enter("html");
+      const v = await rect(s, "#video");
+      if (!(await hover(s, v))) throw new Error("no button before the update");
+      // Shown a while (its look-up done, the copy idle), the pointer still moving over it.
+      for (let i = 0; i < 8; i++) {
+        await s.mouse((v.l + v.r) / 2 + (i % 2), (v.t + v.b) / 2);
+        await sleep(200);
+      }
+      await s.uninstall(s.extension);
+      s.extension = await s.install(firefoxExtension);
+      await sleep(1500);
+      // E2E_SHOTS: <browser>-fullscreen-update.png, the page in full screen with the button(s).
+      if (process.env.E2E_SHOTS) {
+        const dir = path.resolve(process.env.E2E_SHOTS);
+        fs.mkdirSync(dir, { recursive: true });
+        await s.evaluate("(scrollBy(0, 120), true)");
+        await sleep(300);
+        await hover(s, await rect(s, "#video"));
+        await sleep(400);
+        await s.screenshot(path.join(dir, `${t.name}-fullscreen-update.png`));
+      }
+      await one("after the extension was updated, in full screen");
+      await leave();
+      await one("after the update, out of full screen");
+      done.push("one after the extension was updated while it showed");
+    }
+    return done.join("; ");
+  },
+
+  // #689: the sample feeds at their sites' addresses (served by the browser's protocol).
+  async feeds(t) {
+    if (!WIN) throw new Skip(NO_UIA);
+    return feedVideos(t);
+  },
+
+  async video(t) {
+    return videoButton(t.session, t.last);
+  },
+
+  // #1735 and the feedback of 2026-11-23: round in a feed, whole over a big player, faint as the
+  // pointer rests, dragged outside the player and kept, back from its menu and the popup's Reset.
+  async calm(t) {
+    return calmButton(t.session);
+  },
+
+  // #474: a tab opened while the browser can't reach MDM's host (MDM being installed or updated,
+  // the host failing to start) gets the video button within seconds once the host is back, with
+  // no reload; its click then starts MDM, and after MDM quits and starts again under the open
+  // tab a click still reaches it. The host's program is moved away while the page loads (the
+  // browser can't start it), then put back.
+  async reconnect(t) {
+    const s = t.session;
+    const nmhost = exe("misterdownloadmanager-nmhost");
+    const away = `${nmhost}.e2e-away`;
+    const page = `${LAB}/page?video=${encodeURIComponent("/gen/1M/clip.mp4")}`;
+    const clip = `${LAB}/gen/1M/clip.mp4`;
+    const status = async () => {
+      const popup = await s.tab(`${s.base}popup.html`);
+      try {
+        // The popup's page may still be loading: asked again until it answers.
+        const said = await until("the extension's status", 10000, () =>
+          popup.evaluate(`(globalThis.browser ?? chrome).storage.local.get({ status: { why: null } }).then((v) => JSON.stringify(v.status.why))`).catch(() => ""),
+        );
+        return JSON.parse(said);
+      } finally {
+        await popup.close();
+      }
+    };
+    const click = async (v, label) => {
+      const b = await hover(s, v);
+      if (!b) throw new Error(`${label}: no button over the video`);
+      await s.mouse(await mainPart(s, b), (b.t + b.b) / 2, "click");
+    };
+    const done = [];
+    await stopApp();
+    try {
+      fs.renameSync(nmhost, away);
+      await s.navigate(page);
+      const v = await rect(s, "#video");
+      if (await hover(s, v)) throw new Error("the host can't start: a button showed all the same");
+      const why = await status();
+      if (!why) throw new Error("the host can't start: the toolbar button says connected");
+      done.push(`host away: no button, the toolbar button says ${why}`);
+      fs.renameSync(away, nmhost);
+      // The page asks again (video.js ASK_MS), with no reload.
+      await s.mouse(5, 5);
+      await sleep(PANEL_KEPT_MS);
+      if (!(await hover(s, v))) throw new Error("the host back: no button in the open tab without a reload");
+      done.push("host back: the button in the open tab, no reload");
+      // MDM isn't running: the click starts it, which takes the video. (Its earlier copy of the
+      // file first off its list: a duplicate would be asked about.)
+      await startApp();
+      const earlier = (await mdmList()).filter((d) => d.url === clip).map((d) => d.id);
+      if (earlier.length) await ipc({ action: "delete", ids: earlier });
+      await stopApp();
+      await click(v, "MDM not running");
+      const first = await until("the video's file in MDM's list (MDM started by the host)", 45000, async () =>
+        (await mdmList().catch(() => [])).find((d) => d.url === clip),
+      );
+      if (ourApps().length !== 1) throw new Error(`${ourApps().length} instances run after the click`);
+      const said = await status();
+      if (said && said !== "update-app") throw new Error(`MDM reached, the toolbar button still says ${said}`);
+      done.push(`click: MDM started, ${first.file} in its list, the toolbar button connected`);
+      // MDM quits and starts again under the open tab: the next click reaches the new one.
+      await ipc({ action: "delete", ids: [first.id] });
+      await stopApp();
+      await startApp();
+      const before = new Set((await mdmList()).map((d) => d.id));
+      // The first click's green "Added to MDM" over (6 s): a click on it isn't a new one.
+      await s.mouse(5, 5);
+      await until("the first click's state over", 10000, async () => (await s.pill(PILL_STATE).catch(() => null))?.state !== "sent");
+      await click(v, "MDM started again");
+      const again = await until("the video's file in the restarted MDM's list", 15000, async () => (await mdmList()).find((d) => !before.has(d.id))).catch(async (e) => {
+        throw new Error(`${e.message} (the button: ${JSON.stringify(await s.pill(PILL_STATE))})`);
+      });
+      if (again.url !== clip) throw new Error(`MDM downloads ${again.url}`);
+      done.push(`MDM quit and started again: the next click reached it (${again.file})`);
+    } finally {
+      if (fs.existsSync(away)) fs.renameSync(away, nmhost);
+      await s.mouse(5, 5);
+    }
+    return done.join("; ");
+  },
+
+  // MDM not running: the host starts it (off the screens, with the test's data folder: both
+  // reach it through the browser's environment) and hands the download over.
+  async start(t) {
+    await stopApp();
+    const file = `e2e-start-${t.name}.zip`;
+    await clickLink(t, `/gen/1M/${file}`);
+    await arrived(file, 1 << 20, "Compressed", 60000);
+    const pids = ourApps();
+    if (pids.length !== 1) throw new Error(`${pids.length} instances run after the download`);
+    // Off the screens: read on Windows only (NO_UIA).
+    const shown = WIN ? pids.flatMap((p) => appWindows(p, "", true)) : [];
+    await keptNothing(t.dl);
+    await stopApp();
+    if (shown.length) throw new Error(`the instance the host started shows on the screen: ${shown.join(", ")}`);
+    return `started by the host (pid ${pids[0]})${WIN ? ", off the screens" : ""}, stopped`;
+  },
+
+  // #157: Send downloads to → Another Mister Download Manager. The popup pairs with a server (its
+  // address and a code); a link clicked then downloads there, into the server's folders, the
+  // browser's cookies not sent: neither the browser nor this computer's MDM keeps it. The popup
+  // goes back to This computer at the end.
+  async remote(t) {
+    const r = await remoteServer();
+    const s = t.session;
+    const file = `e2e-remote-${t.name}.zip`;
+    const popup = await s.tab(`${s.base}popup.html?tab=settings&keep=1`);
+    if (popup.viewport) await popup.viewport(400, 548);
+    try {
+      const said = await pairRemote(popup, r);
+      await clickLink(t, `/gen/1M/${file}`);
+      const at = await until(`${file} in the server's folder`, 45000, () => findFile(r.downloads, file, 1 << 20));
+      // The server's requests (not the browser's own first one, which it cancels): none with the
+      // browser's cookies.
+      const theirs = (await requests(`/gen/1M/${file}`)).filter((e) => e.user_agent !== t.ua);
+      if (!theirs.length) throw new Error("no request from the server");
+      if (theirs.some((e) => (e.cookie || "").length)) throw new Error(`a cookie went to the server's download: ${theirs.map((e) => e.cookie).join("; ")}`);
+      if ((await mdmList().catch(() => [])).some((d) => d.file === file)) throw new Error("this computer's MDM got it too");
+      await keptNothing(t.dl);
+      // The popup's Downloads tab (#1496): the server's downloads, with a word saying so, and
+      // none of the buttons that need the file on this computer.
+      await popup.evaluate(`(document.getElementById("tab-downloads").click(), true)`);
+      const listed = JSON.parse(
+        await until("the server's downloads in the popup", 15000, () =>
+          popup.evaluate(`(() => { const li = [...document.querySelectorAll("#dl-list li.dl")].find((x) => x.querySelector(".dl-name").dataset.full === ${JSON.stringify(file)});
+            if (!li || document.getElementById("dl-remote").hidden || li.dataset.state !== "done") return "";
+            li.querySelector(".dl-more").click();
+            const menu = [...document.querySelectorAll(".menu .menu-item")].map((b) => b.dataset.act);
+            return JSON.stringify({ note: document.getElementById("dl-remote-text").textContent, menu, open: li.querySelector(".dl-name").tagName }); })()`),
+        ),
+      );
+      if (listed.menu.some((a) => ["open", "folder", "copyFile", "share", "del", "again"].includes(a)) || listed.open !== "SPAN") {
+        throw new Error(`the server's download offers what needs the file here: ${JSON.stringify(listed)}`);
+      }
+      if (process.env.E2E_SHOTS && popup.shot) {
+        await popup.evaluate(`(document.querySelector(".menu .menu-item").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), true)`);
+        await sleep(400);
+        await popup.shot(path.join(path.resolve(process.env.E2E_SHOTS), `${process.env.E2E_LANG || "en"}-${process.env.E2E_COLOR_SCHEME || "system"}-dl-remote.png`));
+      }
+      return `paired (${said}); ${file} downloaded by the server into ${path.relative(r.downloads, at)} (${theirs.length} request(s), no cookie), not by this computer; the popup lists it ("${listed.note}"), its menu [${listed.menu}]`;
+    } finally {
+      await popup.evaluate(`(document.getElementById("to-here").click(), true)`).catch(() => {});
+      await sleep(500);
+      await popup.close();
+    }
+  },
+
+  // #1596: with another MDM chosen, Download all links and Download selected links send the
+  // page's links there, never to this computer's: those of the file types MDM takes, 100 at most,
+  // each started there at once. The toolbar button's tip says how many went and how many were
+  // left out; with the other MDM stopped, the batch ends at its first link with the red "!" and
+  // "Server not reached", gone once this computer is chosen again. The selection's links in
+  // Chromium only (Firefox's menu is the real one: right-clicked on a link, it is that link's).
+  async remotelinks(t) {
+    const r = await remoteServer();
+    const s = t.session;
+    const popup = await s.tab(`${s.base}popup.html?tab=settings&keep=1`);
+    if (popup.viewport) await popup.viewport(400, 548);
+    // The toolbar button's badge and tip, and the other MDM's own state in the add-on's status.
+    const button = async () =>
+      JSON.parse(
+        await popup.evaluate(`(async () => {
+          const api = globalThis.browser ?? globalThis.chrome;
+          const act = api.action ?? api.browserAction;
+          const { status } = await api.storage.local.get("status");
+          return JSON.stringify({ badge: await act.getBadgeText({}), title: await act.getTitle({}), remoteWhy: (status && status.remoteWhy) || null });
+        })()`),
+      );
+    // The lab's 1 KB files the other MDM asked for (not the browser: its user agent), by path.
+    const served = async () =>
+      [...new Set((await (await fetch(`${LAB}/_log`)).json()).filter((e) => e.path.startsWith("/gen/1K/") && e.user_agent !== t.ua).map((e) => e.path))].sort();
+    // The page's links to its files (`#files`), and every link it has.
+    const linksOf = async () =>
+      JSON.parse(await s.evaluate(`JSON.stringify({ files: [...document.querySelectorAll("#files a")].map((a) => new URL(a.href).pathname), all: new Set([...document.querySelectorAll("a[href]")].map((a) => a.href)).size })`));
+    const here = async () => (await mdmList().catch(() => [])).filter((d) => d.url.includes("/gen/1K/")).length;
+    // A batch from `page` (`selected`: its first two lines selected first): the other MDM asked
+    // for exactly `want` of its files, the tip said `tip`, nothing came to this computer.
+    const batch = async (page, want, tip, selected = false) => {
+      await clearLog();
+      await s.navigate(page);
+      const links = await linksOf();
+      if (selected) {
+        await s.evaluate(`(() => { const li = document.querySelectorAll("#files li"); const g = document.createRange(); g.setStart(li[0], 0); g.setEnd(li[1], li[1].childNodes.length); getSelection().removeAllRanges(); getSelection().addRange(g); return true; })()`);
+      }
+      const mine = await here();
+      const tips = new Set();
+      await linksMenu(t, page, selected);
+      const expected = want(links);
+      const got = await until(`${page}: ${expected.length} files on the other MDM`, 60000, async () => {
+        tips.add((await button()).title);
+        const g = await served();
+        return g.length >= expected.length ? g : null;
+      }).catch(async (e) => {
+        throw new Error(`${e.message} (asked: ${(await served()).length}; tips: ${[...tips].join(" | ")})`);
+      });
+      await sleep(3000);
+      const all = await served();
+      if (JSON.stringify(all) !== JSON.stringify([...expected].sort())) throw new Error(`${page}: the other MDM asked for ${all.length} files, not the ${expected.length} expected: ${all.slice(0, 5).join(", ")}…`);
+      const said = await until(`${page}: the tip`, 5000, async () => {
+        const b = await button();
+        tips.add(b.title);
+        return [...tips].find((x) => x === tip(links));
+      }).catch(() => {
+        throw new Error(`${page}: the tip said ${[...tips].join(" | ")}, not "${tip(links)}"`);
+      });
+      const b = await button();
+      if (b.badge === "!") throw new Error(`${page}: the badge is "!" after a batch that went`);
+      if ((await here()) !== mine) throw new Error(`${page}: this computer's MDM got some too`);
+      await keptNothing(t.dl);
+      return `${all.length} asked, "${said}"`;
+    };
+    try {
+      const paired = await pairRemote(popup, r);
+      const done = [];
+      // Seven files and a page, which isn't a type MDM takes.
+      const a = `${LAB}/page?files=7&link=${encodeURIComponent("/gen/1K/notes.html")}&title=links-a`;
+      done.push(`7 files and a page: ${await batch(a, (l) => l.files, (l) => `Links sent: 7, ${l.all - 7} left out`)}`);
+      // Past the cap: the first 100 of 105.
+      const b = `${LAB}/page?files=105&pathlen=48&title=links-b`;
+      done.push(`105 files: ${await batch(b, (l) => l.files.slice(0, 100), (l) => `Links sent: 100, ${l.all - 100} left out`)}`);
+      // The selection's two (Chromium): from the first line's start to the second line's end, inside
+      // it (a range that ends where the third line starts touches it, and touching counts).
+      if (t.kind === "chromium") {
+        const c = `${LAB}/page?files=6&pathlen=56&title=links-c`;
+        done.push(`2 of 6 selected: ${await batch(c, (l) => l.files.slice(0, 2), () => "Links sent: 2", true)}`);
+      }
+      // The other MDM stopped: the batch ends at its first link, said in red, until this
+      // computer is chosen again.
+      if (remote && remote.proc) {
+        await stopRemote();
+        remote = null;
+        const d = `${LAB}/page?files=40&pathlen=64&title=links-d`;
+        await s.navigate(d);
+        const started = Date.now();
+        await linksMenu(t, d);
+        const down = await until("Server not reached", 30000, async () => {
+          const x = await button();
+          return x.badge === "!" && x.title === "Server not reached" && x.remoteWhy === "unreachable" ? x : null;
+        }).catch(async (e) => {
+          throw new Error(`${e.message} (the button: ${JSON.stringify(await button())})`);
+        });
+        const ms = Date.now() - started;
+        if (ms > 20000) throw new Error(`"Server not reached" after ${ms} ms: the batch tried more than its first link`);
+        await popup.evaluate(`(document.getElementById("to-here").click(), true)`);
+        const back = await until("this computer chosen, the red ! gone", 10000, async () => {
+          const x = await button();
+          return x.badge !== "!" && x.title !== "Server not reached" && !x.remoteWhy ? x : null;
+        }).catch(async (e) => {
+          throw new Error(`${e.message} (the button: ${JSON.stringify(await button())})`);
+        });
+        done.push(`the other MDM stopped: "${down.title}", badge "!" in ${ms} ms; this computer chosen again: "${back.title}", badge "${back.badge}"`);
+      }
+      return `paired (${paired}); ${done.join("; ")}`;
+    } finally {
+      await popup.evaluate(`(document.getElementById("to-here").click(), true)`).catch(() => {});
+      await sleep(500);
+      await popup.close();
+    }
+  },
+};
+
+// Known product bugs: a case listed here still runs, and its failure is reported as BUG (with
+// what was found) instead of FAILED. Key: "case" or "browser:case".
+// A product failure known and not fixed yet, by case ("browser:case" or "case"): listed as BUG
+// (still failing the run) rather than FAILED.
+const KNOWN_BUGS = {};
+
+// The registry keys `nmhost --register` and `--unregister` touch (crates/nmhost REGISTRY_KEYS,
+// FIREFOX_KEY, CHROME_EXTERNAL_KEY): each browser's host entry and Chrome's external extension,
+// per user and for everyone (the latter only read: an installed copy's). [key, 32-bit view].
+// Also this account's .torrent and magnet associations (TORRENT_KEYS), which Torrent settings'
+// switch writes (win32.rs set_torrent_handlers): no test instance may touch them (#1058); one
+// changed fails the run, after being put back.
+const HOST = "com.misterdownloadmanager.host";
+const REG_KEYS = ["HKCU", "HKLM"].flatMap((root) => [
+  ...[
+    "Software\\Google\\Chrome\\NativeMessagingHosts",
+    "Software\\Chromium\\NativeMessagingHosts",
+    "Software\\Microsoft\\Edge\\NativeMessagingHosts",
+    "Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts",
+    "Software\\Mozilla\\NativeMessagingHosts",
+  ].map((k) => [`${root}\\${k}\\${HOST}`, false]),
+  [`${root}\\Software\\Google\\Chrome\\Extensions`, true],
+]).concat([".torrent", "magnet", "MisterDownloadManager.Torrent"].map((k) => [`HKCU\\Software\\Classes\\${k}`, false]));
+const TORRENT_KEYS = new Set(REG_KEYS.filter(([k]) => k.includes("\\Classes\\")).map(([k]) => k));
+
+// Linux and macOS: the host's manifests (`<HOST>.json`) in the home folder's browser folders,
+// found by a walk (each browser family has its own places: crates/ipc browsers.rs host_dirs),
+// as {key: path, bytes}. The walk skips build and package folders.
+function manifestFiles() {
+  const home = process.env.HOME || "";
+  const skip = new Set(["target", "node_modules", ".cargo", ".rustup", ".git", ".cache"]);
+  const found = [];
+  const walk = (dir, depth) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory() && !e.isSymbolicLink() && depth < 6 && !skip.has(e.name)) walk(p, depth + 1);
+      else if (e.name === `${HOST}.json`) found.push(p);
+    }
+  };
+  walk(home, 0);
+  return found;
+}
+function unixSnapshot(extra = []) {
+  return [...new Set([...manifestFiles(), ...extra])].map((key) => ({ key, bytes: fs.existsSync(key) ? fs.readFileSync(key) : null }));
+}
+// The manifests as they were before the run: each one written since is put back or removed.
+function unixRestore(before, written) {
+  const was = new Map(before.map((b) => [b.key, b.bytes]));
+  const changed = [];
+  for (const a of unixSnapshot(written)) {
+    const b = was.get(a.key) ?? null;
+    if ((a.bytes === null && b === null) || (a.bytes && b && a.bytes.equals(b))) continue;
+    changed.push(a.key);
+    if (b) fs.writeFileSync(a.key, b);
+    else fs.rmSync(a.key, { force: true });
+  }
+  const again = new Map(unixSnapshot(written).map((a) => [a.key, a.bytes]));
+  const differ = [...new Set([...was.keys(), ...again.keys()])].filter((k) => {
+    const [x, y] = [was.get(k) ?? null, again.get(k) ?? null];
+    return !((x === null && y === null) || (x && y && x.equals(y)));
+  });
+  return { changed, differ };
+}
+
+// Each key's export (reg export: its values, byte for byte), or null when it isn't there.
+export function regSnapshot(dir) {
+  if (!WIN) return unixSnapshot();
+  fs.mkdirSync(dir, { recursive: true });
+  return REG_KEYS.map(([key, wow32], i) => {
+    const file = path.join(dir, `key${i}.reg`);
+    fs.rmSync(file, { force: true });
+    const view = wow32 ? ["/reg:32"] : [];
+    const r = spawnSync("reg", ["export", key, file, "/y", ...view], { stdio: "ignore" });
+    return { key, view, file, bytes: r.status === 0 ? fs.readFileSync(file) : null };
+  });
+}
+
+// The keys as they were before the run: compared byte for byte; one that differs (per user only,
+// never HKLM) is removed and imported again from its copy. What was found, for the summary.
+export function regRestore(before, dir, written = []) {
+  if (!WIN) return unixRestore(before, written);
+  const after = regSnapshot(dir);
+  const changed = [];
+  for (const [i, b] of before.entries()) {
+    const a = after[i];
+    const same = (a.bytes === null && b.bytes === null) || (a.bytes && b.bytes && a.bytes.equals(b.bytes));
+    if (same) continue;
+    changed.push(b.key);
+    if (!b.key.startsWith("HKCU")) continue;
+    spawnSync("reg", ["delete", b.key, "/f", ...b.view], { stdio: "ignore" });
+    if (b.bytes) spawnSync("reg", ["import", b.file, ...b.view], { stdio: "ignore" });
+  }
+  const again = changed.length ? regSnapshot(path.join(dir, "again")) : after;
+  const differ = before.filter((b, i) => !((again[i].bytes === null && b.bytes === null) || (again[i].bytes && b.bytes && again[i].bytes.equals(b.bytes))));
+  return { changed, differ: differ.map((b) => b.key) };
+}
+
+// E2E_HOST_NAME=com.mdm.sometest (Windows): the host is registered under that test name only, for
+// this run's browsers only (per user), instead of `nmhost --register`'s every browser under the
+// real name: a browser you have open never reaches the test's host. The extensions loaded are
+// pack.ps1's with that name in background.js (Firefox's family: its folder, as a temporary
+// add-on, with the same add-on ID). Its keys are removed at the end.
+const TEST_HOST_KEYS = {
+  chrome: "Software\\Google\\Chrome\\NativeMessagingHosts",
+  brave: "Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts",
+  edge: "Software\\Microsoft\\Edge\\NativeMessagingHosts",
+  // Helium is built with Chromium's branding: it reads Chromium's key, then Chrome's (#685).
+  helium: "Software\\Chromium\\NativeMessagingHosts",
+  // Firefox's forks read Mozilla's key too.
+  firefox: "Software\\Mozilla\\NativeMessagingHosts",
+  waterfox: "Software\\Mozilla\\NativeMessagingHosts",
+};
+function testHost(name, browsers, nmhost) {
+  if (!WIN) throw new Error("E2E_HOST_NAME: Windows only");
+  if (!/^[a-z0-9_]+(\.[a-z0-9_]+)+$/.test(name) || name === HOST) throw new Error(`E2E_HOST_NAME: ${name} isn't a test host name`);
+  const other = browsers.filter((b) => !TEST_HOST_KEYS[b]);
+  if (other.length) throw new Error(`E2E_HOST_NAME: not for ${other.join(", ")}`);
+  // pack.ps1's folder for `kind`, copied with the test host's name in its background.js.
+  const renamedCopy = (kind) => {
+    const dir = path.join(work, `extension-${kind}`);
+    fs.cpSync(path.join(root, "target", "extension", kind), dir, { recursive: true });
+    const bg = path.join(dir, "background.js");
+    const code = fs.readFileSync(bg, "utf8");
+    const renamed = code.replace(`const HOST = "${HOST}";`, `const HOST = ${JSON.stringify(name)};`);
+    if (renamed === code) throw new Error("background.js: its host's name wasn't found");
+    fs.writeFileSync(bg, renamed);
+    return dir;
+  };
+  const kinds = new Set(browsers.map((b) => BROWSERS[b][0]));
+  const manifests = {};
+  const write = (kind, more) => {
+    const file = path.join(work, "host", `${name}.${kind}.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ name, description: "Mister Download Manager (test)", path: nmhost, type: "stdio", ...more }, null, 2));
+    manifests[kind] = file;
+  };
+  if (kinds.has("chromium")) {
+    const dir = renamedCopy("chromium");
+    // The unpacked extension's ID, from its manifest's key (as Chromium makes it).
+    const key = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8")).key;
+    const hex = crypto.createHash("sha256").update(Buffer.from(key, "base64")).digest("hex").slice(0, 32);
+    const id = [...hex].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join("");
+    write("chromium", { allowed_origins: [`chrome-extension://${id}/`] });
+    chromiumExtension = dir;
+  }
+  if (kinds.has("firefox")) {
+    const dir = renamedCopy("firefox");
+    const id = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8")).browser_specific_settings.gecko.id;
+    if (id !== FIREFOX_ID) throw new Error(`the Firefox add-on's ID is ${id}, not ${FIREFOX_ID}`);
+    write("firefox", { allowed_extensions: [id] });
+    firefoxExtension = { type: "path", path: dir };
+  }
+  // One key per browser family's registry place (Firefox and its forks share one).
+  const entries = [...new Map(browsers.map((b) => [`HKCU\\${TEST_HOST_KEYS[b]}\\${name}`, manifests[BROWSERS[b][0]]])).entries()];
+  const keys = entries.map(([k]) => k);
+  const there = (k) => spawnSync("reg", ["query", k], { stdio: "ignore" }).status === 0;
+  for (const k of keys) if (there(k)) throw new Error(`${k} is there already: not touching it`);
+  for (const [k, file] of entries) {
+    if (spawnSync("reg", ["add", k, "/ve", "/t", "REG_SZ", "/d", file, "/f"], { stdio: "ignore" }).status !== 0) {
+      for (const [added] of entries) spawnSync("reg", ["delete", added, "/f"], { stdio: "ignore" });
+      throw new Error(`reg add ${k}`);
+    }
+  }
+  return {
+    keys,
+    // Removed; the ones still there after (none).
+    remove: () => {
+      for (const k of keys) spawnSync("reg", ["delete", k, "/f"], { stdio: "ignore" });
+      return keys.filter(there);
+    },
+  };
+}
+
+// Is Internet Download Manager running (E2E_IDM_OK=1)? Even with its 127.0.0.1 exception it takes
+// a PDF sent "inline; filename=..." at the network level (the browser gets "204 No Content",
+// IDM downloads the file itself), so that case is left out while it runs.
+let idmRunning = false;
+
+// run()'s cleanup once it has started something (stopRun calls it too), and whether it began:
+// nothing new is started from then on.
+let cleanup = null;
+let stopping = false;
+
+async function run() {
+  const args = process.argv.slice(2);
+  const only = (args.find((a) => a.startsWith("--only=")) || "").slice(7).split(",").filter(Boolean);
+  const wanted = args.filter((a) => !a.startsWith("--"));
+  const names = (wanted.length ? wanted : Object.keys(BROWSERS)).filter((n) => {
+    if (!BROWSERS[n]) throw new Error(`unknown browser ${n}`);
+    return wanted.length || BROWSERS[n][1].some((p) => fs.existsSync(p));
+  });
+  for (const c of only) if (!CASES[c]) throw new Error(`unknown case ${c} (${Object.keys(CASES).join(", ")})`);
+  // IDM's browser integration takes browsers' downloads at the network level (the browser gets
+  // "204 No Content"): it would take the test's files and show its own windows. E2E_IDM_OK=1 when
+  // IDM leaves 127.0.0.1 alone (an exception for it in its options).
+  if (process.platform === "win32") {
+    const idm = spawnSync("tasklist", ["/FI", "IMAGENAME eq IDMan.exe", "/NH"], { encoding: "utf8" }).stdout;
+    idmRunning = /IDMan\.exe/i.test(idm);
+    if (idmRunning && process.env.E2E_IDM_OK !== "1") throw new Error("Internet Download Manager is running: quit it first (it takes the browsers' downloads), or set E2E_IDM_OK=1 if it leaves 127.0.0.1 alone");
+  }
+  for (const p of [appExe, exe("misterdownloadmanager-nmhost"), exe("labserver")]) {
+    if (!fs.existsSync(p)) throw new Error(`build it first: ${p}`);
+  }
+  const t0 = Date.now();
+  fs.rmSync(work, { recursive: true, force: true });
+  data = path.join(work, "data");
+  downloads = path.join(work, "Downloads");
+  fs.mkdirSync(data, { recursive: true });
+  // Captured downloads start at once (no Download File Info) into folders under target/e2e; the
+  // automation API answers what the list holds.
+  const dirs = ["General", "Compressed", "Documents", "Music", "Programs", "Video", "Torrents"].map((c) => [
+    c,
+    c === "General" ? downloads : path.join(downloads, c),
+  ]);
+  fs.writeFileSync(
+    path.join(data, "downloads.json"),
+    JSON.stringify({
+      next_id: 1,
+      items: [],
+      version: 2,
+      settings: {
+        // E2E_APP_LANG: MDM's own language for a pull request's pictures (what the app sends
+        // the menu, #852, is in it), English otherwise.
+        language: process.env.E2E_APP_LANG || "en",
+        language_asked: true,
+        extension_never_ask: true,
+        show_start_dialog: false,
+        automation_api: true,
+        // The default types plus XZ, for the proxy case (a type other download managers leave
+        // alone); TORRENT for the torrents case (#1058).
+        auto_types: "3GP 7Z AAC ACE AIF APK ARJ ASF AVI BIN BZ2 EXE GZ GZIP IMG ISO LZH M4A M4V MKV MOV MP3 MP4 MPA MPE MPEG MPG MSI MSU OGG OGV PDF PLJ PPS PPT QT R0* R1* RA RAR RM RMVB SEA SIT SITX TAR TIF TIFF TORRENT WAV WMA WMV XZ Z ZIP",
+        category_dirs: dirs,
+        // Torrent settings' switch decided (off): the instance never settles it from this
+        // computer's installer value or associations (#1058).
+        torrent_handler: false,
+      },
+    }),
+  );
+  // A yt-dlp for the streams case (#155): E2E_YTDLP, else one on PATH, chosen as the person's
+  // own copy (Helpers: <data>/tools/programs.json), so nothing is downloaded.
+  const found = process.env.E2E_YTDLP || spawnSync(process.platform === "win32" ? "where" : "which", ["yt-dlp"], { encoding: "utf8" }).stdout.split(/\r?\n/)[0];
+  const version = found && fs.existsSync(found) ? spawnSync(found, ["--version"], { encoding: "utf8" }).stdout.trim() : "";
+  // An ffmpeg for the qualities case (streams with their sound apart are merged): E2E_FFMPEG,
+  // else one on PATH, chosen the same way.
+  const where = (name) => spawnSync(process.platform === "win32" ? "where" : "which", [name], { encoding: "utf8" }).stdout.split(/\r?\n/)[0];
+  const ffFound = process.env.E2E_FFMPEG || where("ffmpeg");
+  const ffVersion = ffFound && fs.existsSync(ffFound) ? (/ffmpeg version (\S+)/.exec(spawnSync(ffFound, ["-version"], { encoding: "utf8" }).stdout) || [])[1] || "" : "";
+  const programs = {};
+  if (version) {
+    ytdlp = found;
+    programs["yt-dlp"] = { version, exe: found };
+  }
+  if (ffVersion) {
+    ffmpeg = ffFound;
+    programs.ffmpeg = { version: ffVersion, exe: ffFound };
+  }
+  if (Object.keys(programs).length) {
+    fs.mkdirSync(path.join(data, "tools"), { recursive: true });
+    fs.writeFileSync(path.join(data, "tools", "programs.json"), JSON.stringify(programs));
+  }
+  // The browsers pass these on to the host, and the host to an app it starts.
+  process.env.MDM_DATA_DIR = data;
+  process.env.MDM_OFFSCREEN = "1";
+
+  before = new Set(appProcesses().map(([pid]) => pid));
+  const nmhost = exe("misterdownloadmanager-nmhost");
+  const results = [];
+  let regBefore = null;
+  let regCheck = null;
+  let written = [];
+  // This run ran `nmhost --register` under the real name: only then is it unregistered at the end
+  // (a run stopped before, e.g. by an installed copy's registration, must leave that one alone).
+  let registered = false;
+  // E2E_HOST_NAME's registration (testHost), and what was left of it at the end.
+  let test = null;
+  let testLeft = [];
+  // The browser open now: its profile (from before it starts) and its session.
+  let openProfile = null;
+  let session = null;
+  // The lab server and the proxy (started in the try below, so a failed start is cleaned up too).
+  let server = null;
+  let proxy = null;
+  // Everything this run started, stopped, and the registry put back: at its end, or from a signal
+  // or an uncaught error (stopRun), once. What it found, as the summary's lines.
+  let cleaned = null;
+  let summary = [];
+  cleanup = () =>
+    (cleaned ??= (async () => {
+      stopping = true;
+      // The registry first: a closed console leaves a few seconds only.
+      if (test) testLeft = test.remove();
+      else if (registered) spawnSync(nmhost, ["--unregister"]);
+      if (regBefore) regCheck = regRestore(regBefore, path.join(work, "registry", "after"), written);
+      if (session) session.close();
+      else if (openProfile) killProfile(openProfile);
+      await stopApp().catch(() => {});
+      await stopRemote().catch(() => {});
+      for (const pid of ourPids()) killPid(pid);
+      killTree(server);
+      if (proxy) proxy.close();
+      const lines = [];
+      if (regCheck) {
+        const kept = regBefore.filter((b) => b.bytes).map((b) => b.key);
+        lines.push(
+          regCheck.differ.length
+            ? `${WIN ? "registry" : "host manifests"}: DIFFERS after the run: ${regCheck.differ.join(", ")}`
+            : `${WIN ? "registry" : "host manifests"}: ${regBefore.length} ${WIN ? "keys" : "files"} byte-identical to before the run${regCheck.changed.length ? ` (put back: ${regCheck.changed.join(", ")})` : ""}; present before: ${kept.join(", ") || "none"}`,
+        );
+      }
+      if (test) lines.push(testLeft.length ? `test host: STILL REGISTERED: ${testLeft.join(", ")}` : `test host: ${test.keys.join(", ")} registered for the run, removed`);
+      return lines;
+    })());
+  try {
+    const lab = startLab();
+    server = lab.server;
+    proxy = startProxy();
+    PORT = await lab.port;
+    LAB = `http://127.0.0.1:${PORT}`;
+    await proxy.started;
+    console.error(`  lab server on ${PORT}, proxy on ${PROXY_PORT}`);
+    await until("the lab server", 10000, () => fetch(`${LAB}/`).then((r) => r.ok, () => false));
+    // An installed Mister Download Manager's registration is never replaced or removed.
+    // Linux and macOS: its manifests (files) are put back byte for byte at the end, so a lab
+    // machine's (E2E_REPLACE_HOST=1) may be replaced while the run lasts. E2E_HOST_NAME never
+    // touches the real name (testHost), so it runs beside an installed copy.
+    const key = "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.misterdownloadmanager.host";
+    const installed = WIN ? spawnSync("reg", ["query", key], { stdio: "ignore" }).status === 0 : regSnapshot().some((m) => m.bytes) && process.env.E2E_REPLACE_HOST !== "1";
+    if (installed && !process.env.E2E_HOST_NAME) {
+      throw new Error("Mister Download Manager's host is already registered (an installed copy): not touching it (E2E_HOST_NAME runs beside it)");
+    }
+    regBefore = regSnapshot(path.join(work, "registry", "before"));
+    if (process.env.E2E_HOST_NAME) {
+      test = testHost(process.env.E2E_HOST_NAME, names, nmhost);
+    } else {
+      registered = true;
+      const reg = spawnSync(nmhost, ["--register"], { encoding: "utf8" });
+      // Where it wrote (Linux, macOS), for the restore.
+      written = [...(reg.stdout || "").matchAll(/^registered \S+ in (.+)$/gm)].map((m) => path.join(m[1].trim(), `${HOST}.json`));
+      if (reg.status !== 0) throw new Error(`nmhost --register: ${reg.stderr || reg.stdout}`);
+    }
+    for (const name of names) {
+      const [kind, candidates] = BROWSERS[name];
+      const bin = candidates.find((p) => fs.existsSync(p));
+      // A Snap (Ubuntu's Firefox) reads its profile only from its own folder, and starts the host
+      // through the desktop portal, without the browser's environment (MDM_DATA_DIR): the host
+      // would reach this computer's own MDM, not the test instance, so only the remote case runs.
+      const snap = Boolean(bin) && bin.startsWith("/snap/");
+      const profile = snap ? path.join(process.env.HOME, "snap", name, "common", "mdm-e2e-profile") : path.join(work, `profile-${name}`);
+      const dl = path.join(work, `browser-${name}`);
+      fs.rmSync(profile, { recursive: true, force: true });
+      fs.mkdirSync(profile, { recursive: true });
+      fs.mkdirSync(dl, { recursive: true });
+      // Linux: with --user-data-dir, Chromium reads the host's manifest from that folder.
+      const chromiumManifest = written.find((w) => !/mozilla/i.test(w));
+      if (!WIN && kind === "chromium" && chromiumManifest) {
+        fs.mkdirSync(path.join(profile, "NativeMessagingHosts"), { recursive: true });
+        fs.copyFileSync(chromiumManifest, path.join(profile, "NativeMessagingHosts", `${HOST}.json`));
+      }
+      const started = Date.now();
+      session = null;
+      openProfile = profile;
+      try {
+        if (!bin) throw new Error("not installed");
+        await startApp();
+        // The extension, installed, asked the host for the rules: the host notes the browser in
+        // extension-seen (by the name Options gives it).
+        const seen = path.join(data, "extension-seen");
+        fs.rmSync(seen, { force: true });
+        let seenAs = "";
+        // E2E_OLD_APP=1: an app older than extension-seen (0.2.4, for the compatibility runs:
+        // a new extension with a released app): the extension is given time to reach it instead.
+        const ready = () =>
+          snap
+            ? sleep(3000).then(() => (seenAs = "(a Snap: not this test's instance; only the remote case runs)"))
+            : process.env.E2E_OLD_APP
+            ? sleep(8000).then(() => (seenAs = "(an older app: not reported)"))
+            : until(`${name}'s extension reaching the host`, 20000, () => {
+            try {
+              seenAs = fs.readFileSync(seen, "utf8").split("\t")[0];
+              return seenAs;
+            } catch {
+              return false;
+            }
+          }).then(() => sleep(300)); // its answer stored
+        session = await (kind === "firefox" ? firefox : chromium)(bin, profile, dl, `${LAB}/page?link=none`, ready, name);
+        const t = { name, kind, session, dl, snap, last: name === names[names.length - 1], ua: await session.evaluate("navigator.userAgent") };
+        // Firefox's family: whether it asks what to do with each new type (E2E_FIREFOX_ASK).
+        const asks = session.inBrowser
+          ? `, asks for new types: ${await session.inBrowser(`Services.prefs.getBoolPref("browser.download.always_ask_before_handling_new_types", false)`)}`
+          : "";
+        results.push([name, "browser", "ok", `${kind} ${session.major} (to MDM: ${seenAs}), extension ${session.extension}${asks}`, Date.now() - started]);
+        for (const [label, fn] of Object.entries(CASES)) {
+          if (only.length && !only.includes(label)) continue;
+          const at = Date.now();
+          try {
+            if (snap && label !== "remote") throw new Skip("a Snap browser starts the host without the test's environment");
+            await startApp();
+            await clearLog();
+            const detail = await fn(t);
+            results.push([name, label, "ok", detail || "", Date.now() - at]);
+          } catch (e) {
+            const bug = KNOWN_BUGS[`${name}:${label}`] || KNOWN_BUGS[label];
+            const status = e instanceof Skip ? "skipped" : bug ? "BUG" : "FAILED";
+            // A failed fetch ("fetch failed") names its cause only there.
+            const message = e.cause ? `${e.message} (${e.cause.code || e.cause.message || e.cause})` : e.message;
+            results.push([name, label, status, bug ? `${bug} -- ${message}` : message, Date.now() - at]);
+            // What the browser kept, so the next case starts clean.
+            for (const f of fs.readdirSync(dl)) fs.rmSync(path.join(dl, f), { force: true, recursive: true });
+          }
+          console.error(`  ${name} ${label}: ${results[results.length - 1][2]}`);
+          // The browser stopped answering (stopped) or went away: its other cases can't run.
+          const gone = session.gone();
+          if (gone) {
+            results.push([name, "browser", "FAILED", `${gone.message}; its other cases weren't run`, Date.now() - started]);
+            break;
+          }
+          if (stopping) break;
+          // E2E_DEBUG: what the extension did (Chromium).
+          if (session.trace && process.env.E2E_DEBUG) console.error(`${name} ${label} trace:`, await session.trace());
+        }
+      } catch (e) {
+        results.push([name, "browser", "FAILED", e.message, Date.now() - started]);
+      } finally {
+        if (session) session.close();
+        session = null;
+        openProfile = null;
+        if (snap) fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+      }
+      if (stopping) break;
+    }
+  } finally {
+    summary = await cleanup();
+  }
+  for (const [name, label, status, detail, ms] of results) {
+    console.log(`${name.padEnd(8)} ${label.padEnd(9)} ${status.padEnd(8)} ${(ms / 1000).toFixed(1).padStart(5)}s  ${detail}`);
+  }
+  for (const line of summary) console.log(line);
+  // A test instance changed this account's .torrent or magnet association (put back above).
+  const associations = regCheck ? regCheck.changed.filter((k) => TORRENT_KEYS.has(k)) : [];
+  if (associations.length) console.log(`registry: the run CHANGED this account's torrent associations (put back): ${associations.join(", ")}`);
+  console.log(`total ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  if (results.some((r) => r[2] === "FAILED" || r[2] === "BUG") || (regCheck && regCheck.differ.length) || associations.length || testLeft.length) process.exit(1);
+}
+
+// The run stopped from outside (Ctrl+C, SIGTERM, its console closed) or by an error nothing
+// caught: what it started is stopped and the registry put back (cleanup) before it exits, as at
+// its end. Once: a second signal while that runs only says so.
+let ending = false;
+async function stopRun(why, code) {
+  if (ending) return console.error(`${why}: still stopping what the run started`);
+  ending = true;
+  console.error(`${why}: stopping what the run started`);
+  stopping = true;
+  try {
+    if (cleanup) for (const line of await within("the cleanup", 90000, cleanup())) console.error(line);
+  } catch (e) {
+    console.error(`the cleanup: ${e.message}`);
+    code = code || 1;
+  }
+  process.exit(code);
+}
+
+// Run when started, not when another script imports its helpers (tools/readme/browser-shots.mjs).
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  // SIGHUP: the console window closed (Windows gives a few seconds); SIGBREAK: Ctrl+Break.
+  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129], ...(WIN ? [["SIGBREAK", 149]] : [])]) {
+    process.on(signal, () => stopRun(signal, code));
+  }
+  // Its output gone (the console or a pipe closed) doesn't stop the cleanup.
+  for (const s of [process.stdout, process.stderr]) s.on("error", () => {});
+  process.on("uncaughtException", (e) => stopRun(`an uncaught error: ${(e && e.stack) || e}`, 1));
+  // A command left waiting nowhere (a case gave up on it) fails with its stopped browser: the
+  // browser's own case reports that.
+  process.on("unhandledRejection", (e) => (e instanceof BrowserGone ? undefined : stopRun(`an unhandled rejection: ${(e && e.stack) || e}`, 1)));
+  run().catch((e) => {
+    console.error(e.message);
+    process.exit(1);
+  });
+}

@@ -1,0 +1,23 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+  <string name="app_name">Mister Download Manager</string>
+  <string name="downloads">Downloads</string>
+  <string name="add">Add download</string>
+  <string name="active">Active</string>
+  <string name="speed">Total speed</string>
+  <string name="all">All</string>
+  <string name="complete">Completed</string>
+  <string name="pause">Pause</string>
+  <string name="resume">Start / resume</string>
+  <string name="export">Save to device</string>
+  <string name="connections">Connections</string>
+  <string name="name">File name (optional)</string>
+  <string name="limit">Speed limit (KB/s)</string>
+  <string name="start">Start</string>
+  <string name="cancel">Cancel</string>
+  <string name="loading">Initializing engine…</string>
+  <string name="empty">No downloads here</string>
+  <string name="stopping">Saving progress…</string>
+  <string name="saved">File saved</string>
+  <string name="failed">Operation failed</string>
+</resources>

@@ -1,0 +1,322 @@
+//! A disk slower than the network, for tests and measurements (#361, #782): with
+//! `Options::slow_disk`, the part file's writes and flushes go through it. It behaves like a
+//! hard disk behind the system's write cache:
+//! - a write lands in the cache, which the disk empties at `rate` bytes/s; once `cache` bytes
+//!   wait there, a write waits for the disk (Windows and Linux hold writers to its pace);
+//! - a flush waits until the disk has written everything waiting, plus `flush_takes`, and
+//!   holds every write to the file meanwhile, as NTFS does (measured in #361).
+//!
+//! The real write or flush still runs, after the wait. The real flush runs once the writes are
+//! let go (#1626): by then the modelled disk has written what waited, and holding the writes
+//! while the machine's own disk writes it all again counted it twice. On a CI runner whose disk
+//! was busy, that real flush took seconds and the transfer stood still for 6 s, a stall of the
+//! runner's disk, not of the one modelled here. Where the system's own flush holds the writes
+//! (NTFS), it still does so by itself.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::time::{Duration, Instant};
+
+#[derive(Clone, Debug)]
+pub struct SlowDisk {
+    /// Bytes/s the disk writes. 0: as fast as the real disk (only `flush_takes` is slow).
+    pub rate: u64,
+    /// Bytes the system's cache takes in before writes wait for the disk.
+    pub cache: u64,
+    /// What every flush during the transfer takes on top of writing what waits in the cache.
+    pub flush_takes: Duration,
+    /// `flush_takes` for the forced flushes too (at the start and the end): a disk whose every
+    /// flush is slow, even with nothing of this file waiting (a busy disk's cache, #1328).
+    pub every_flush: bool,
+    /// Held exclusively for each flush and shared for each write (tests watch it).
+    pub gate: Arc<RwLock<()>>,
+    /// Real writes under way, the modelled wait over (`SlowDisk::writing`).
+    writing: Arc<AtomicUsize>,
+    backlog: Arc<Mutex<Backlog>>,
+    stats: Arc<Mutex<DiskStats>>,
+    clock: Clock,
+}
+
+/// The time the disk goes by: the real one, or in tests one that moves only when the disk
+/// waits, so that their checks hold on a slow or busy machine.
+#[derive(Clone, Debug)]
+pub(crate) enum Clock {
+    Real,
+    #[cfg(test)]
+    Manual(Arc<Mutex<Instant>>),
+}
+
+impl Clock {
+    pub(crate) fn now(&self) -> Instant {
+        match self {
+            Clock::Real => Instant::now(),
+            #[cfg(test)]
+            Clock::Manual(t) => *t.lock().unwrap(),
+        }
+    }
+
+    pub(crate) fn sleep(&self, d: Duration) {
+        match self {
+            Clock::Real => std::thread::sleep(d),
+            #[cfg(test)]
+            Clock::Manual(t) => *t.lock().unwrap() += d,
+        }
+    }
+}
+
+/// Bytes in the cache not yet on the disk, as of `at`.
+#[derive(Debug)]
+struct Backlog {
+    bytes: f64,
+    at: Instant,
+}
+
+/// What the disk did, for measurements.
+#[derive(Clone, Debug, Default)]
+pub struct DiskStats {
+    /// How long each flush took, the wait for the disk included.
+    pub flushes: Vec<Duration>,
+    /// How long each flush held the writes: the modelled disk's part of it, without the real
+    /// flush that follows.
+    pub holds: Vec<Duration>,
+    /// Writes that waited for the disk (its cache full, or a flush), and how long in all.
+    pub writes_waited: u64,
+    pub write_wait: Duration,
+}
+
+impl SlowDisk {
+    pub fn new(rate: u64, cache: u64, flush_takes: Duration) -> Self {
+        Self::with_clock(rate, cache, flush_takes, Clock::Real)
+    }
+
+    pub(crate) fn with_clock(rate: u64, cache: u64, flush_takes: Duration, clock: Clock) -> Self {
+        SlowDisk {
+            rate,
+            cache,
+            flush_takes,
+            every_flush: false,
+            gate: Default::default(),
+            writing: Default::default(),
+            backlog: Arc::new(Mutex::new(Backlog {
+                bytes: 0.0,
+                at: clock.now(),
+            })),
+            stats: Default::default(),
+            clock,
+        }
+    }
+
+    /// A disk that is only slow to flush (`takes`), its writes as fast as the real disk's.
+    pub fn slow_flush(takes: Duration) -> Self {
+        Self::new(0, u64::MAX, takes)
+    }
+
+    /// [`SlowDisk::slow_flush`], the forced flushes as slow (`every_flush`).
+    pub fn slow_every_flush(takes: Duration) -> Self {
+        SlowDisk {
+            every_flush: true,
+            ..Self::slow_flush(takes)
+        }
+    }
+
+    pub fn stats(&self) -> DiskStats {
+        self.stats.lock().unwrap().clone()
+    }
+
+    /// Run `write` (of `n` bytes) once the disk takes them in.
+    pub fn write<T>(&self, n: u64, write: impl FnOnce() -> T) -> T {
+        let began = self.clock.now();
+        let _flush_over = self.gate.read().unwrap();
+        // A disk of `rate` 0 takes everything at once.
+        while let Some(wait) = (self.rate > 0).then(|| self.room_in(n)).flatten() {
+            self.clock.sleep(wait.min(Duration::from_millis(20)));
+        }
+        let waited = self.clock.now() - began;
+        if waited >= Duration::from_millis(1) {
+            let mut s = self.stats.lock().unwrap();
+            s.writes_waited += 1;
+            s.write_wait += waited;
+        }
+        self.writing.fetch_add(1, Ordering::SeqCst);
+        let done = write();
+        self.writing.fetch_sub(1, Ordering::SeqCst);
+        done
+    }
+
+    /// How many writes the machine's own disk is taking now, the modelled disk done with them.
+    /// While one is under way, a transfer standing still waits for the machine's disk, not for
+    /// the one modelled here: a test can't hold a busy computer's disk to a pace. Measured on a
+    /// computer writing gigabytes beside the test: every connection's 256 KiB write to the part
+    /// file took about 8 s at once, with no flush running (#1633).
+    pub fn writing(&self) -> usize {
+        self.writing.load(Ordering::SeqCst)
+    }
+
+    /// Run `flush` once everything in the cache is on the disk; `extra`: plus `flush_takes`
+    /// (the saves while the connections run, not the forced ones at the start and the end).
+    pub fn flush<T>(&self, extra: bool, flush: impl FnOnce() -> T) -> T {
+        let extra = extra || self.every_flush;
+        let began = self.clock.now();
+        {
+            // A forced save of a disk only slow to flush is a plain one (the gate tells tests a
+            // slow flush runs).
+            let _writes_wait = (extra || self.rate > 0).then(|| self.gate.write().unwrap());
+            let left = if self.rate > 0 {
+                Duration::from_secs_f64(self.backlog().bytes / self.rate as f64)
+            } else {
+                Duration::ZERO
+            };
+            self.clock.sleep(
+                left + if extra {
+                    self.flush_takes
+                } else {
+                    Duration::ZERO
+                },
+            );
+            self.backlog().bytes = 0.0;
+        }
+        let held = self.clock.now() - began;
+        // The real flush, the writes let go (module doc).
+        let done = flush();
+        let took = self.clock.now() - began;
+        let mut s = self.stats.lock().unwrap();
+        s.flushes.push(took);
+        s.holds.push(held);
+        done
+    }
+
+    /// Run `sync`, a flush of another file on this disk (the resume state's atomic write), once
+    /// the writes already queued ahead of it are on the disk (`every_flush`: plus `flush_takes`).
+    /// Another file's flush neither holds the part file's writes nor writes out what arrives for
+    /// the part file meanwhile (#1633).
+    pub fn sync<T>(&self, sync: impl FnOnce() -> T) -> T {
+        let left = if self.rate > 0 {
+            Duration::from_secs_f64(self.backlog().bytes / self.rate as f64)
+        } else {
+            Duration::ZERO
+        };
+        let extra = if self.every_flush {
+            self.flush_takes
+        } else {
+            Duration::ZERO
+        };
+        self.clock.sleep(left + extra);
+        sync()
+    }
+
+    /// Take `n` bytes into the cache if they fit (or it is empty), else how long until they do.
+    fn room_in(&self, n: u64) -> Option<Duration> {
+        let mut b = self.backlog();
+        let after = b.bytes + n as f64;
+        if b.bytes == 0.0 || after <= self.cache as f64 {
+            b.bytes = after;
+            return None;
+        }
+        Some(Duration::from_secs_f64(
+            (after - self.cache as f64) / self.rate as f64,
+        ))
+    }
+
+    /// The cache's backlog now (the disk wrote `rate` bytes/s of it since last time).
+    fn backlog(&self) -> MutexGuard<'_, Backlog> {
+        let mut b = self.backlog.lock().unwrap();
+        let now = self.clock.now();
+        let gone = (now - b.at).as_secs_f64() * self.rate as f64;
+        b.bytes = (b.bytes - gone).max(0.0);
+        b.at = now;
+        b
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Within a microsecond of `want` (the backlog is counted in floating point).
+    fn about(took: Duration, want: Duration) -> bool {
+        took.abs_diff(want) < Duration::from_micros(1)
+    }
+
+    /// The model itself: writes go straight into the cache until it is full, then wait for the
+    /// disk, which empties the cache meanwhile; a flush waits for what is left. Timed on the
+    /// disk's own clock, which moves only when the disk waits: on a slow or busy machine the
+    /// real one went on between two steps and the cache drained, so a flush took less than the
+    /// test expected (#923's CI on macOS).
+    #[test]
+    fn writes_wait_once_the_cache_is_full() {
+        let clock = Clock::Manual(Arc::new(Mutex::new(Instant::now())));
+        let ms = Duration::from_millis;
+        let d = SlowDisk::with_clock(100 << 20, 10 << 20, ms(30), clock.clone());
+        // `mib` MiB written, one at a time: how long they waited.
+        let writes = |mib: usize| {
+            let t = clock.now();
+            for _ in 0..mib {
+                d.write(1 << 20, || ());
+            }
+            clock.now() - t
+        };
+        assert_eq!(writes(10), Duration::ZERO, "10 MiB fit in the cache");
+        assert_eq!(d.stats().writes_waited, 0);
+        // The cache is full: each MiB more waits for the disk to write one, at 100 MiB/s.
+        let took = writes(10);
+        assert!(about(took, ms(100)), "{took:?}");
+        let s = d.stats();
+        assert_eq!(s.writes_waited, 10);
+        assert!(about(s.write_wait, ms(100)), "{:?}", s.write_wait);
+        // In 50 ms the disk writes 5 MiB of it: 5 MiB more fit at once, the next one waits.
+        clock.sleep(ms(50));
+        assert_eq!(writes(5), Duration::ZERO);
+        let took = writes(1);
+        assert!(about(took, ms(10)), "{took:?}");
+        // A flush waits for the 10 MiB in the cache, plus what a flush takes; then nothing is
+        // left, and a forced flush (at the start and the end) doesn't take that either.
+        d.flush(true, || ());
+        d.flush(true, || ());
+        d.flush(false, || ());
+        let f = d.stats().flushes;
+        assert!(about(f[0], ms(130)), "{f:?}");
+        assert!(about(f[1], ms(30)) && f[2] == Duration::ZERO, "{f:?}");
+    }
+
+    /// #1626: the real flush runs once the modelled one has let the writes go. A real flush of
+    /// 2 s (a busy CI runner's disk) counts in the flush's time, not in how long it held the
+    /// writes: those are the modelled disk's 0.5 s for its 50 MiB.
+    #[test]
+    fn the_real_flush_does_not_hold_the_writes() {
+        let clock = Clock::Manual(Arc::new(Mutex::new(Instant::now())));
+        let ms = Duration::from_millis;
+        let d = SlowDisk::with_clock(100 << 20, 256 << 20, Duration::ZERO, clock.clone());
+        d.write(50 << 20, || ());
+        let writes_go = d.flush(true, || {
+            clock.sleep(ms(2000));
+            d.gate.try_read().is_ok()
+        });
+        assert!(writes_go, "the writes waited for the real flush");
+        let s = d.stats();
+        assert!(about(s.flushes[0], ms(2500)), "{:?}", s.flushes);
+        assert!(about(s.holds[0], ms(500)), "{:?}", s.holds);
+    }
+
+    /// #1633: flushing another file on a busy disk (the resume state's atomic write) waits for
+    /// what was already queued, without holding the part file's writes or clearing what they add
+    /// meanwhile.
+    #[test]
+    fn syncing_another_file_waits_for_the_disk_without_holding_writes() {
+        let clock = Clock::Manual(Arc::new(Mutex::new(Instant::now())));
+        let ms = Duration::from_millis;
+        let d = SlowDisk::with_clock(100 << 20, 256 << 20, ms(30), clock.clone());
+        d.write(50 << 20, || ());
+        let t = clock.now();
+        let writes_go = d.sync(|| {
+            // While the state's write waited 500 ms for the earlier 50 MiB, those 50 MiB drained;
+            // 20 MiB written to the part file at the end stay in its cache.
+            d.write(20 << 20, || ());
+            d.gate.try_read().is_ok()
+        });
+        assert!(writes_go, "another file's sync held the part file's writes");
+        assert!(about(clock.now() - t, ms(500)));
+        assert!(d.stats().flushes.is_empty());
+        d.flush(true, || ());
+        assert!(about(d.stats().holds[0], ms(230)), "{:?}", d.stats().holds);
+    }
+}

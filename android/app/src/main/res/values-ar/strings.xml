@@ -1,0 +1,23 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+  <string name="app_name">مدير تنزيلات مستر</string>
+  <string name="downloads">التنزيلات</string>
+  <string name="add">إضافة تنزيل</string>
+  <string name="active">نشطة</string>
+  <string name="speed">السرعة الإجمالية</string>
+  <string name="all">الكل</string>
+  <string name="complete">مكتملة</string>
+  <string name="pause">إيقاف مؤقت</string>
+  <string name="resume">بدء / استكمال</string>
+  <string name="export">حفظ في الجهاز</string>
+  <string name="connections">الاتصالات</string>
+  <string name="name">اسم الملف (اختياري)</string>
+  <string name="limit">حد السرعة (كيلوبايت/ث)</string>
+  <string name="start">بدء</string>
+  <string name="cancel">إلغاء</string>
+  <string name="loading">تهيئة المحرك…</string>
+  <string name="empty">لا توجد تنزيلات هنا</string>
+  <string name="stopping">حفظ التقدم…</string>
+  <string name="saved">تم حفظ الملف</string>
+  <string name="failed">فشلت العملية</string>
+</resources>

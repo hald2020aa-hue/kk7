@@ -1,0 +1,38 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.compose'
+}
+android {
+    namespace 'org.misterdownloadmanager.mobile'
+    compileSdk 35
+    ndkVersion '28.2.13676358'
+    defaultConfig {
+        applicationId 'org.misterdownloadmanager.mobile'
+        minSdk 29
+        targetSdk 35
+        versionCode 1
+        versionName '0.5.2-android-dev'
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    buildFeatures { compose true }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    kotlinOptions { jvmTarget = '17' }
+    sourceSets.main.jniLibs.srcDirs += layout.buildDirectory.dir('rustJniLibs').get().asFile
+    packaging { jniLibs { useLegacyPackaging = true } }
+}
+def buildRust = tasks.register('buildRust', Exec) {
+    workingDir rootProject.projectDir.parentFile
+    environment 'ANDROID_NDK_HOME', android.ndkDirectory.absolutePath
+    commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '-p', '29', '-o', layout.buildDirectory.dir('rustJniLibs').get().asFile.absolutePath, 'build', '--locked', '-p', 'mdm-mobile', '--release'
+}
+tasks.named('preBuild').configure { dependsOn(buildRust) }
+dependencies {
+    implementation platform('androidx.compose:compose-bom:2025.04.01')
+    implementation 'androidx.activity:activity-compose:1.10.1'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.9.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2'
+    implementation 'rustls:rustls-platform-verifier:0.2.0'
+}
