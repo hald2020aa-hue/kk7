@@ -109,7 +109,7 @@ proptest = "1.12.0"
 # bot check refused MDM's own connection is asked once more the way a browser connects (its TLS
 # handshake, HTTP/2 settings and header order), on BoringSSL. Builds BoringSSL from source:
 # CMake, a C/C++ compiler, libclang and, on Windows, NASM.
-wreq = { version = "=0.16.3", default-features = false, features = ["webpki-roots", "tokio-rt", "socks", "stream", "gzip", "brotli", "zstd", "deflate"] }
+wreq = { version = "=0.16.4", default-features = false, features = ["webpki-roots", "tokio-rt", "socks", "stream", "gzip", "brotli", "zstd", "deflate"] }
 # emulation-compression: the profile's own Accept-Encoding, in Chrome's place and words (#1494).
 wreq-util = { version = "=0.2.1", default-features = false, features = ["emulation", "emulation-compression"] }
 # Its trusted certificates: Mozilla's (as wreq's own default) and the system's, which MDM's own
