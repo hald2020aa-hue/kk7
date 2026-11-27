@@ -138,7 +138,7 @@ class BrowserPanel(
             }
             webChromeClient = object : WebChromeClient() {
                 override fun onProgressChanged(view: WebView, value: Int) {
-                    if (view == current()) progress.progress = value
+                    if (view == current()) this@BrowserPanel.progress.progress = value
                 }
             }
             setDownloadListener { url, _, _, _, _ -> offer(url, false) }
