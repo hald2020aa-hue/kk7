@@ -1,0 +1,34 @@
+{
+  "status": "development checkpoint, not compiled or approved for release",
+  "changed_this_round": [
+    "android/app/src/main/java/com/misterdownloadmanager/android/BrowserPanel.kt",
+    "crates/app/src/batch.rs",
+    "crates/app/src/dialogs.rs",
+    "crates/app/src/grabber.rs",
+    "crates/app/src/options.rs",
+    "crates/app/src/phone.rs",
+    "crates/app/src/progress.rs",
+    "crates/app/src/scheduler.rs",
+    "crates/app/src/torrentdlg.rs",
+    "crates/app/src/videodlg.rs",
+    "crates/app/src/winui.rs"
+  ],
+  "missing_original_files": [],
+  "engine_files_matching_v6": 72,
+  "engine_files_total": 72,
+  "original_source_files_present": 2748,
+  "validation": [
+    "All V6 paths preserved",
+    "Engine bytes verified against uploaded V6 ZIP",
+    "git diff --no-index --check on changed Kotlin and Rust sources",
+    "ZIP CRC check after packaging"
+  ],
+  "pending": [
+    "Rust and Kotlin compilation; toolchains unavailable locally",
+    "Actual ARM64 build and tests",
+    "Screenshots and comparison on Z Fold 4, folded and unfolded",
+    "Real direct downloads, torrents, video and background operation",
+    "Performance measurement",
+    "Independent visual redesign of every remaining dialog and exact visual acceptance"
+  ]
+}

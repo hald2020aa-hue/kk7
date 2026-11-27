@@ -20,6 +20,8 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.Toast
+import android.widget.TextView
+import android.content.res.ColorStateList
 
 /** A bounded, native WebView browser. It does not replace MDM's downloader. */
 class BrowserPanel(
@@ -30,6 +32,7 @@ class BrowserPanel(
     private val bg = Color.rgb(8, 15, 25)
     private val surface = Color.rgb(20, 35, 54)
     private val cyan = Color.rgb(0, 229, 255)
+    private val purple = Color.rgb(151, 90, 255)
     private val dialog = Dialog(host, android.R.style.Theme_Material_NoActionBar)
     private val tabs = mutableListOf<WebView>()
     private var selected = -1
@@ -37,6 +40,7 @@ class BrowserPanel(
         orientation = LinearLayout.VERTICAL
         layoutDirection = if (arabic) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
         setBackgroundColor(bg)
+        isFocusableInTouchMode = true
     }
     private val strip = LinearLayout(host).apply { orientation = LinearLayout.HORIZONTAL }
     private val frame = FrameLayout(host)
@@ -51,15 +55,23 @@ class BrowserPanel(
         setPadding(dp(12), 0, dp(12), 0)
         background = shape(surface, cyan)
     }
-    private val progress = ProgressBar(host, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }
+    private val progress = ProgressBar(host, null, android.R.attr.progressBarStyleHorizontal).apply {
+        max = 100
+        progressTintList = ColorStateList.valueOf(cyan)
+        progressBackgroundTintList = ColorStateList.valueOf(surface)
+    }
     private fun tr(en: String, ar: String) = if (arabic) ar else en
     private fun dp(n: Int): Int = (n * host.resources.displayMetrics.density).toInt()
     private fun shape(fill: Int, stroke: Int) = GradientDrawable().apply {
-        setColor(fill); cornerRadius = dp(9).toFloat(); setStroke(dp(1), stroke)
+        orientation = GradientDrawable.Orientation.TL_BR
+        colors = intArrayOf(fill, bg)
+        cornerRadius = dp(10).toFloat()
+        setStroke(dp(1), stroke)
     }
     private fun button(label: String, action: () -> Unit) = Button(host).apply {
         text = label; isAllCaps = false; setTextColor(Color.WHITE)
         background = shape(surface, cyan); minHeight = dp(48); minimumHeight = dp(48)
+        setPadding(dp(12), dp(6), dp(12), dp(6))
         setOnClickListener { action() }
     }
     private fun row() = LinearLayout(host).apply {
@@ -80,6 +92,21 @@ class BrowserPanel(
             addView(button(tr("Reload", "تحديث")) { current()?.reload() })
             addView(button(tr("Close", "إغلاق")) { dialog.dismiss() })
         }
+        root.addView(row().apply {
+            background = shape(surface, purple)
+            addView(TextView(host).apply {
+                text = tr("MDM V8 · Internal browser", "MDM V8 · المتصفح الداخلي")
+                setTextColor(Color.WHITE)
+                textSize = 18f
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(TextView(host).apply {
+                text = "Neon Pro"
+                setTextColor(cyan)
+                textSize = 12f
+                setPadding(dp(8), dp(12), dp(8), dp(12))
+            })
+        })
         root.addView(scrollRow(nav))
         root.addView(scrollRow(strip))
         root.addView(row().apply {
@@ -102,6 +129,8 @@ class BrowserPanel(
         dialog.setOnDismissListener { releaseTabs() }
         dialog.show()
         dialog.window?.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+        root.requestFocus()
         addTab()
     }
     private fun navigate() {
@@ -115,7 +144,7 @@ class BrowserPanel(
         }
         if (allowed(url)) current()?.loadUrl(url)
     }
-    private fun addTab() {
+    private fun addTab(focusAddress: Boolean = false) {
         if (tabs.size >= 6) { toast(tr("Six tabs maximum", "الحد الأقصى ستة تبويبات")); return }
         val web = WebView(host).apply {
             settings.javaScriptEnabled = true
@@ -145,7 +174,7 @@ class BrowserPanel(
         }
         tabs += web
         selectTab(tabs.lastIndex)
-        address.requestFocus()
+        if (focusAddress) address.requestFocus()
     }
     private fun selectTab(index: Int) {
         if (index !in tabs.indices) return
@@ -156,6 +185,7 @@ class BrowserPanel(
         frame.addView(web, FrameLayout.LayoutParams(-1, -1))
         web.onResume()
         address.setText(web.url?.takeUnless { it == "about:blank" }.orEmpty())
+        progress.progress = web.progress
         rebuildTabs()
     }
     private fun rebuildTabs() {
@@ -168,7 +198,7 @@ class BrowserPanel(
                 }
             })
         }
-        strip.addView(button("+") { addTab() })
+        strip.addView(button("+") { addTab(true) })
         strip.addView(button("×") {
             if (tabs.size > 1 && selected in tabs.indices) {
                 frame.removeAllViews()

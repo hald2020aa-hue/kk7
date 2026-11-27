@@ -1122,6 +1122,10 @@ impl AddUrl {
             winui::BG(),
             |ui, o| {
                 let p = ui.painter().clone();
+                if crate::app::phone::active(ui.ctx()) {
+                    crate::app::phone::dialog_section(ui,winui::r(o,8.0,5.0,at.client[0]-16.0,96.0),true);
+                    crate::app::phone::dialog_section(ui,winui::r(o,8.0,105.0,at.client[0]-16.0,161.0),false);
+                }
                 // i18n: noun: the web address (URL)
                 winui::text(
                     &p,
@@ -1136,7 +1140,7 @@ impl AddUrl {
                 if addr.changed() {
                     self.error = None;
                 }
-                if ui.memory(|m| m.focused().is_none()) {
+                if !crate::app::phone::active(ui.ctx()) && ui.memory(|m| m.focused().is_none()) {
                     addr.request_focus();
                 }
                 // The arrow: the addresses entered before.
@@ -2180,6 +2184,12 @@ impl FileInfo {
             |ui, o| {
                 let p = ui.painter().clone();
                 let v = o.to_vec2();
+                if crate::app::phone::active(ui.ctx()) {
+                    let w=lay.client[0]-16.0;
+                    crate::app::phone::dialog_section(ui,winui::r(o,8.0,5.0,w,74.0),true);
+                    crate::app::phone::dialog_section(ui,winui::r(o,8.0,82.0,w,207.0),false);
+                    crate::app::phone::dialog_section(ui,winui::r(o,8.0,292.0,w,145.0+dy),false);
+                }
                 lay.url_label.draw(&p, o, crate::i18n::t("URL"));
                 let url_rc = lay.url.translate(v);
                 let url_box = winui::edit(ui, url_rc, &mut self.url_text, true, false);

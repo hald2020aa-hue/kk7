@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use egui::{Pos2, Ui, pos2};
+use egui::{Pos2, Ui, pos2, vec2};
 use mdm_tools::declared::Declared;
 use mdm_tools::resolve::{Choice, Looked, SubChoice, Video};
 use mdm_tools::video::{ALL_UPLOADERS, Subs};
@@ -736,6 +736,11 @@ impl VideoDialog {
     fn body(&mut self, ui: &mut Ui, o: Pos2, rt: &tokio::runtime::Handle) -> Outcome<()> {
         let p = ui.painter().clone();
         let (dir, ytdlp, ffmpeg) = self.tools.get_or_insert_with(tools).clone();
+        if crate::app::phone::active(ui.ctx()) {
+            let w=width(ui.ctx())-10.0;
+            crate::app::phone::dialog_section(ui,r(o,5.0,3.0,w,85.0),true);
+            crate::app::phone::dialog_section(ui,r(o,5.0,248.0,w,BUTTONS_Y+self.split_row()-250.0),false);
+        }
         text(
             &p,
             o.x + 11.0,
@@ -1086,6 +1091,11 @@ impl VideoDialog {
             if let Some(i) = picked {
                 self.chosen = i;
                 self.name_from_choice();
+            }
+            if self.video.as_ref().is_none_or(|(_, c)| c.is_empty()) && self.error.is_none() && !busy && crate::theme::current().id=="neon-pro" && crate::app::phone::active(ui.ctx()) {
+                crate::icons::Icon::HelperVideo.image(true).paint_at(ui,egui::Rect::from_center_size(list.center()-vec2(0.0,18.0),vec2(36.0,36.0)));
+                let ar=crate::i18n::code().starts_with("ar");
+                p.text(list.center()+vec2(0.0,21.0),egui::Align2::CENTER_CENTER,if ar{"ابحث عن فيديو لعرض الجودات المتاحة"}else{"Look up a video to see available formats"},egui::FontId::proportional(12.0),winui::MUTED());
             }
             // Wrapped in the empty list (#317).
             if let Some(e) = self.error.as_ref().filter(|_| error_in_list) {

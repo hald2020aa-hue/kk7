@@ -1865,8 +1865,11 @@ pub fn row_list(
     let mut ev = RowEvents::default();
     let id = widget_id(ui, ("row-list", id));
     let p = ui.painter().clone();
-    solid(&p, rc, FIELD_EDGE());
-    p.rect_filled(rc.shrink(1.0), 0.0, FIELD());
+    let neon_list=crate::theme::current().id=="neon-pro" && crate::theme::dark_surface();
+    if neon_list {
+        fill_shaded(&p,rc,8.0,&[(0.0,crate::derive::mix(FIELD(),crate::theme::colors().accent,0.06)),(1.0,FIELD())]);
+        p.rect_stroke(rc,8.0,Stroke::new(1.0,FIELD_EDGE()),StrokeKind::Inside);
+    } else { solid(&p, rc, FIELD_EDGE()); p.rect_filled(rc.shrink(1.0), 0.0, FIELD()); }
     // Laid out in English, made where it is on screen.
     let inner = rect(rc).shrink(1.0);
     let page = (((inner.height() - 2.0) / row_h).floor() as usize).max(1);
@@ -2005,7 +2008,11 @@ pub fn row_list(
             }
         };
         if let Some(f) = fill {
-            clip.rect_filled(rect(row), 0.0, f);
+            if neon_list {
+                let rr=rect(row).shrink2(vec2(2.0,1.0));
+                clip.rect_filled(rr,5.0,f);
+                if selected {clip.rect_stroke(rr,5.0,Stroke::new(1.0,crate::theme::colors().accent),StrokeKind::Inside);}
+            } else { clip.rect_filled(rect(row), 0.0, f); }
         }
         // A screen reader moving the focus to a row (#1190) selects it, as a click does, and
         // gives the list the keys.
@@ -2472,7 +2479,9 @@ pub fn field_frame(p: &Painter, rc: Rect, look: FieldLook) {
             c.field_readonly_border,
         ),
     };
-    p.rect_filled(rc, radius, inside);
+    if crate::theme::current().id == "neon-pro" && crate::theme::dark_surface() && look != FieldLook::Disabled {
+        fill_shaded(p,rc,radius,&[(0.0,crate::derive::mix(inside,c.accent,0.055)),(1.0,inside)]);
+    } else { p.rect_filled(rc, radius, inside); }
     p.rect_stroke(
         rc,
         radius,
@@ -4680,7 +4689,10 @@ fn paint_button(
     // Torrent, batch, settings and confirmation dialogs without duplicating their commands.
     if crate::theme::current().id == "neon-pro" && crate::theme::dark_surface() && !part && rc.height() >= 34.0 {
         let top = crate::derive::mix(face.fill, c.accent, if state == State::Disabled { 0.0 } else { 0.10 });
-        fill_shaded(p, rc, radius, &[(0.0, top), (1.0, face.fill)]);
+        fill_shaded(p, rc, radius, &[(0.0, top), (0.60, face.fill), (1.0, crate::derive::mix(face.fill,Color32::from_rgb(80,32,130),0.12))]);
+        if state != State::Disabled && (kind == ButtonKind::Default || state == State::Hot || state == State::Pressed) {
+            p.rect_stroke(rc.expand(2.0), radius+2.0, Stroke::new(2.0,c.accent.gamma_multiply(0.15)), StrokeKind::Inside);
+        }
         p.rect_stroke(rc, radius, Stroke::new(m.border, face.border), StrokeKind::Inside);
         return radius;
     }
@@ -6830,7 +6842,11 @@ pub fn tabs_light(
         } else {
             shadow
         };
-        fill(&p, x0, y0, x1, t, face);
+        if crate::theme::current().id=="neon-pro" && crate::theme::dark_surface() {
+            let tab_rect=Rect::from_min_max(pos2(x0,y0),pos2(x1,t));
+            fill_shaded(&p,tab_rect,5.0,&[(0.0,crate::derive::mix(face,crate::theme::colors().accent,if sel{0.16}else{0.04})),(1.0,face)]);
+            p.rect_stroke(tab_rect,5.0,Stroke::new(1.0,if sel{crate::theme::colors().accent}else{border}),StrokeKind::Inside);
+        } else { fill(&p, x0, y0, x1, t, face); }
         hline(&p, x0 + 1.0, x1 - 1.0, y0, border);
         vline(&p, x0, y0 + 1.0, t, border);
         vline(&p, x1, y0 + 1.0, t, border);

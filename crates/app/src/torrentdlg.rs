@@ -566,6 +566,9 @@ impl TorrentDialog {
         } else {
             589.0
         };
+        if crate::app::phone::active(ui.ctx()) {
+            crate::app::phone::dialog_section(ui,r(o,5.0,3.0,right+6.0,52.0),true);
+        }
         let busy = self.lookup.is_some();
         let kind = |on: bool, default: bool| match (on, default) {
             (false, _) => ButtonKind::Disabled,
@@ -702,7 +705,12 @@ impl TorrentDialog {
             }
         }
 
-        self.file_list(ui, r(o, 11.0, 58.0, right - 11.0, 262.0));
+        let files=r(o,11.0,58.0,right-11.0,262.0);
+        self.file_list(ui,files);
+        if self.meta.is_none() && self.error.is_none() && !busy && crate::theme::current().id=="neon-pro" && crate::app::phone::active(ui.ctx()) {
+            crate::icons::Icon::AddTorrent.image(true).paint_at(ui,egui::Rect::from_center_size(files.center()-vec2(0.0,20.0),vec2(40.0,40.0)));
+            p.text(files.center()+vec2(0.0,22.0),egui::Align2::CENTER_CENTER,if crate::i18n::code().starts_with("ar"){"أضف ملف تورنت أو رابطاً مغناطيسياً"}else{"Add a torrent file or magnet link"},egui::FontId::proportional(12.0),winui::MUTED());
+        }
 
         // Select all / none, each as wide as its label in this language (#192), and what is chosen.
         let has = self.meta.is_some();

@@ -900,6 +900,7 @@ impl Grabber {
 
     fn body(&mut self, ui: &mut Ui, o: Pos2) -> Outcome<bool> {
         let p = ui.painter().clone();
+        crate::app::phone::dialog_section(ui,r(o,5.0,3.0,width(ui.ctx())-10.0,25.0),true);
         // Ctrl+V: the addresses in the pasted text, as Import finds them in a file.
         let pasted: Option<String> = ui.input(|i| {
             i.events.iter().find_map(|e| match e {

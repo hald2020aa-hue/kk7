@@ -594,6 +594,7 @@ impl OptionsDialog {
             if let Some(p) = tabbed.or(by_key) {
                 self.page = p;
             }
+            if phone { crate::app::phone::dialog_section(ui,r(o,12.0,20.0,406.0,450.0),false); }
             match self.page {
                 0 => self.general(ui, o),
                 1 => self.file_types(ui, o),
@@ -6093,11 +6094,17 @@ impl OptionsDialog {
                 p.rect_filled(row, 0.0, crate::theme::colors().toolbar_pressed);
             }
             let text = crate::i18n::t(label);
+            let neon = crate::theme::current().id == "neon-pro";
+            if neon {
+                use crate::icons::Icon;
+                let icon=match label { "General"=>Icon::PageGeneral,"File types"=>Icon::PageFileTypes,"Save to"=>Icon::PageSaveTo,"Downloads"=>Icon::PageDownloads,"Connection"=>Icon::PageConnection,"Proxy / Socks"=>Icon::PageProxy,"Site logins"=>Icon::PageLogins,"Archives"=>Icon::PageArchives,"Regional"=>Icon::PageRegional,_=>Icon::Options };
+                icon.image(true).paint_at(ui,r(o,16.0,y+(PHONE_ROW-22.0)*0.5,22.0,22.0));
+            }
             winui::expose(&resp, egui::Role::Button, text, true, None);
             winui::text_font(
                 &p,
                 egui::FontId::new(16.0, winui::tahoma().family),
-                o.x + 16.0,
+                o.x + if neon { 47.0 } else {16.0},
                 o.y + y + PHONE_ROW / 2.0 + 6.0,
                 text,
                 winui::TEXT(),

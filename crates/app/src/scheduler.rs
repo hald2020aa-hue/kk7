@@ -400,6 +400,7 @@ impl Scheduler {
         let p = ui.painter().clone();
         let phone = crate::app::phone::active(ui.ctx());
 
+        if phone { crate::app::phone::dialog_section(ui,r(o,5.0,3.0,430.0,PHONE_SHIFT.y-7.0),true); }
         // ---- left pane ----------------------------------------------------------------
         let clock = r(o, 11.0, 7.0, 32.0, 32.0);
         Icon::Scheduler.image(true).paint_at(ui, clock);

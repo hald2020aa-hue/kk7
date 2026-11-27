@@ -1011,6 +1011,20 @@ impl Progress {
         let (left, right) = (area.min.x + PAD, area.max.x - PAD);
         let o = area.min;
         let mut y = o.y + PAD + 12.0;
+        let neon=crate::theme::current().id=="neon-pro";
+        if neon && right-left>=160.0 {
+            let hero=winui::rect(egui::Rect::from_min_max(egui::pos2(left-5.0,o.y+8.0),egui::pos2(right+5.0,o.y+118.0)));
+            let c=crate::theme::colors();
+            crate::app::phone::card(ui,hero,c.accent,false);
+            let center=egui::pos2(hero.right()-42.0,hero.center().y);
+            crate::app::phone::ring(ui,center,29.0,frac.unwrap_or(0.0) as f32);
+            p.text(center,egui::Align2::CENTER_CENTER,frac.map(|f|crate::i18n::percent(f,1)).unwrap_or_else(||"—".into()),egui::FontId::proportional(15.0),c.text);
+            let clip=p.with_clip_rect(egui::Rect::from_min_max(hero.min+vec2(9.0,0.0),egui::pos2(hero.right()-82.0,hero.bottom())));
+            clip.text(hero.min+vec2(12.0,20.0),egui::Align2::LEFT_CENTER,&item.file_name,egui::FontId::proportional(15.0),c.text);
+            clip.text(hero.min+vec2(12.0,49.0),egui::Align2::LEFT_CENTER,item.status_text(),egui::FontId::proportional(13.0),c.muted);
+            clip.text(hero.min+vec2(12.0,80.0),egui::Align2::LEFT_CENTER,model::rate(item.rate()),egui::FontId::proportional(19.0),c.accent);
+            y+=116.0;
+        }
         // Each row a node of its own for a screen reader, as on the desktop's page (#1406).
         let spoken = |ui: &Ui, label: &str, base: f32, value: &str| {
             let name = spoken_name(crate::i18n::t(label), value);
@@ -1107,8 +1121,10 @@ impl Progress {
             let graph = winui::rect(egui::Rect::from_min_max(
                 egui::pos2(left, y), egui::pos2(right, y + 76.0),
             ));
-            p.rect_filled(graph, 8.0, crate::theme::colors().field);
-            crate::app::phone::speed_graph(ui, graph.shrink(6.0), egui::Id::unique(("neon-progress-rate", item.id)), item.rate(), item.live.is_some());
+            crate::app::phone::card(ui,graph,crate::theme::colors().accent,false);
+            let ar=crate::i18n::code().starts_with("ar");
+            p.text(egui::pos2(graph.center().x,graph.top()+11.0),egui::Align2::CENTER_CENTER,if ar{"مخطط السرعة اللحظية"}else{"Live speed"},egui::FontId::proportional(11.0),crate::theme::colors().text);
+            crate::app::phone::speed_graph(ui, egui::Rect::from_min_max(graph.min+vec2(6.0,22.0),graph.max-vec2(6.0,6.0)), egui::Id::unique(("neon-progress-rate", item.id)), item.rate(), item.live.is_some());
             y += 86.0;
         }
         // Under it, the desktop's split view: each connection's part of the file, from where it
@@ -1189,6 +1205,32 @@ impl Progress {
             crate::dialogs::show_in_folder(&item.dest);
         }
         y += height + PAD;
+        if neon {
+            let section=winui::rect(egui::Rect::from_min_max(egui::pos2(left-5.0,y),egui::pos2(right+5.0,y+138.0)));
+            crate::app::phone::card(ui,section,crate::theme::colors().accent,false);
+            if !self.limit_init {
+                let rate=item.own_limit.or_else(||item.live.as_ref().and_then(|l|l.dl.speed_limit()));
+                self.limiter=rate.is_some();
+                if let Some(rate)=rate {self.limit_kb=(rate/1024).max(1).to_string();}
+                self.remember=item.own_limit.is_some();
+                self.limit_init=true;
+            }
+            winui::text(&p,left,y+18.0,crate::i18n::t("Maximum download speed:"),winui::TEXT());
+            winui::checkbox(ui,egui::pos2(left,y+27.0),&mut self.limiter,"Use Speed Limiter",true);
+            let edit=winui::rect(egui::Rect::from_min_size(egui::pos2(left,y+49.0),vec2((right-left)*0.50,32.0)));
+            winui::edit_right(ui,edit,&mut self.limit_kb,self.limiter);
+            winui::text(&p,left+(right-left)*0.53,y+69.0,crate::i18n::t("KBytes/sec"),winui::MUTED());
+            self.limit_kb.retain(|c|c.is_ascii_digit());
+            let remember_label=if crate::i18n::code().starts_with("ar"){"حفظ الحد لهذا الملف"}else{"Remember for this file"};
+            winui::checkbox(ui,egui::pos2(left,y+88.0),&mut self.remember,remember_label,true);
+            let valid=self.limit_kb.parse::<u64>().ok().filter(|n|*n>0).and_then(|n|n.checked_mul(1024));
+            let can_apply=!self.limiter||valid.is_some();
+            let button=winui::rect(egui::Rect::from_min_size(egui::pos2(left,y+108.0),vec2(right-left,25.0)));
+            if winui::button(ui,button,"Apply",if can_apply{ButtonKind::Default}else{ButtonKind::Disabled},false,None).clicked() && can_apply {
+                self.pending_limit=Some((if self.limiter{valid}else{None},self.remember));
+            }
+            y+=150.0;
+        }
         // Its connections, each with what it got and what it is doing (the desktop's table).
         let mut conns: Vec<_> = snap
             .map(|s| s.connections.iter().collect())

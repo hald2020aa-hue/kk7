@@ -229,6 +229,7 @@ impl Batch {
         let p = ui.painter().clone();
         let phone = crate::app::phone::active(ui.ctx());
         let w = width(ui.ctx());
+        if phone { crate::app::phone::dialog_section(ui,r(o,5.0,3.0,w-10.0,55.0),true); }
         let lines = winui::paragraph(
             &p,
             o.x + 11.0,
