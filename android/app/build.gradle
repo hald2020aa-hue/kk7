@@ -24,7 +24,9 @@ android {
 def buildRust = tasks.register('buildRust', Exec) {
     workingDir rootProject.projectDir.parentFile
     environment 'ANDROID_NDK_HOME', android.ndkDirectory.absolutePath
-    commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '-p', '29', '-o', layout.buildDirectory.dir('rustJniLibs').get().asFile.absolutePath, 'build', '--locked', '-p', 'mdm-mobile', '--release'
+    environment 'ANDROID_NDK_ROOT', android.ndkDirectory.absolutePath
+    environment 'ANDROID_NDK', android.ndkDirectory.absolutePath
+    commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '--platform', '29', '-o', layout.buildDirectory.dir('rustJniLibs').get().asFile.absolutePath, 'build', '--locked', '-p', 'mdm-mobile', '--release'
 }
 tasks.named('preBuild').configure { dependsOn(buildRust) }
 dependencies {
